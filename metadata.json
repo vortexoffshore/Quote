@@ -1,0 +1,6 @@
+{
+  "name": "VORTEX QuoteRank",
+  "description": "A professional, dynamically editable vendor quote comparison application with TCO analysis, customizable categories, and comment sections.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

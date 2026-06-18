@@ -1,0 +1,52 @@
+export interface Vendor {
+  id: string;
+  name: string;
+}
+
+export interface CostComponent {
+  id: string;
+  name: string;
+}
+
+export interface Category {
+  id: string;
+  name: string;
+  components: CostComponent[];
+}
+
+export interface EvaluationCriteria {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface UploadedFile {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  base64: string;
+  uploadedAt: string;
+  vendorId?: string;
+}
+
+export interface QuoteProject {
+  id: string;
+  name: string;
+  date: string;
+  version: string;
+  currency: string; // e.g. USD, EUR, etc.
+  vendors: Vendor[];
+  categories: Category[];
+  criteria?: EvaluationCriteria[]; // Optional for backwards compatibility
+  // costValues[categoryId][componentId][vendorId] = number
+  costValues: Record<string, Record<string, Record<string, number>>>;
+  // comments[categoryId] = string, notes per category
+  comments: Record<string, string>;
+  // vendorNotes[vendorId] = string, qualitative notes per vendor
+  vendorNotes: Record<string, string>;
+  generalNotes: string;
+  uploadedFiles?: UploadedFile[];
+  tcoYears?: 2 | 3;
+  transposeMatrix?: boolean;
+}

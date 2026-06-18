@@ -1,0 +1,31 @@
+{
+  "entities": {
+    "QuoteProject": {
+      "title": "QuoteProject",
+      "description": "A comprehensive comparison project for vendor quotes and TCO analysis.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "date": { "type": "string" },
+        "version": { "type": "string" },
+        "currency": { "type": "string" },
+        "generalNotes": { "type": "string" },
+        "vendors": { "type": "array" },
+        "categories": { "type": "array" },
+        "costValues": { "type": "object" },
+        "comments": { "type": "object" },
+        "vendorNotes": { "type": "object" },
+        "criteria": { "type": "array" },
+        "uploadedFiles": { "type": "array" }
+      },
+      "required": ["id", "name", "date", "version", "currency", "vendors", "categories", "costValues"]
+    }
+  },
+  "firestore": {
+    "projects/{projectId}": {
+      "schema": "QuoteProject",
+      "description": "Collection of all quotes comparison models."
+    }
+  }
+}

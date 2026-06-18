@@ -1,0 +1,2849 @@
+import React, { useState, useEffect, useRef } from "react";
+import { 
+  Plus, 
+  Trash2, 
+  Save, 
+  FileDown, 
+  FileUp, 
+  RefreshCw, 
+  Printer, 
+  TrendingDown, 
+  CheckCircle, 
+  DollarSign, 
+  Calendar, 
+  Layers, 
+  Check, 
+  X, 
+  Copy, 
+  PlusCircle, 
+  Award, 
+  Star, 
+  HelpCircle, 
+  BarChart, 
+  FileText, 
+  Briefcase, 
+  FileSpreadsheet, 
+  Clock, 
+  GripVertical,
+  File,
+  Paperclip,
+  UploadCloud,
+  Eye,
+  Download
+} from "lucide-react";
+import { doc, setDoc, getDocs, collection, deleteDoc } from "firebase/firestore";
+import { db, isFirebaseConfigured, handleFirestoreError, OperationType } from "./firebase";
+import { QuoteProject, Category, CostComponent, Vendor, UploadedFile } from "./types";
+import { DEFAULT_PROJECTS, CURRENCY_SYMBOLS, CATEGORY_COLORS } from "./sampleData";
+
+export default function App() {
+  // State for all comparisons projects
+  const [projects, setProjects] = useState<QuoteProject[]>(() => {
+    const saved = localStorage.getItem("quote_compare_projects");
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      } catch (e) {
+        console.error("Failed to parse saved projects", e);
+      }
+    }
+    return DEFAULT_PROJECTS;
+  });
+
+  // Active project ID
+  const [activeProjectId, setActiveProjectId] = useState<string>(() => {
+    return projects[0]?.id || "project-1";
+  });
+
+  // Selected project object
+  const project = projects.find((p) => p.id === activeProjectId) || projects[0];
+
+  // Load projects from Firebase on mount
+  useEffect(() => {
+    if (!isFirebaseConfigured || !db) return;
+
+    const fetchProjects = async () => {
+      try {
+        const querySnapshot = await getDocs(collection(db, "projects"));
+        const fbProjects: QuoteProject[] = [];
+        querySnapshot.forEach((docSnap) => {
+          fbProjects.push(docSnap.data() as QuoteProject);
+        });
+        if (fbProjects.length > 0) {
+          setProjects(fbProjects);
+          const currentExist = fbProjects.some(p => p.id === activeProjectId);
+          if (!currentExist) {
+            setActiveProjectId(fbProjects[0].id);
+          }
+          console.log("Projects successfully synchronized from Firebase.");
+        }
+      } catch (err) {
+        console.error("Error fetching projects from Firebase:", err);
+      }
+    };
+
+    fetchProjects();
+  }, []);
+
+  // Save projects to localStorage and sync to Firebase immediately whenever they change
+  useEffect(() => {
+    localStorage.setItem("quote_compare_projects", JSON.stringify(projects));
+
+    if (!isFirebaseConfigured || !db) return;
+
+    const syncProjects = async () => {
+      try {
+        for (const p of projects) {
+          await setDoc(doc(db, "projects", p.id), p);
+        }
+      } catch (err) {
+        console.error("Failed to sync project dataset to Firebase:", err);
+      }
+    };
+
+    syncProjects();
+  }, [projects]);
+
+  // TCO projection duration (2-year vs 3-year)
+  const tcoYears = project.tcoYears || 2;
+  const setTcoYears = (val: 2 | 3) => {
+    updateCurrentProject({ ...project, tcoYears: val });
+  };
+
+  // Table orientation layout (false = Cost Components as Rows, true = Vendors as Rows)
+  const transposeMatrix = project.transposeMatrix || false;
+  const setTransposeMatrix = (val: boolean) => {
+    updateCurrentProject({ ...project, transposeMatrix: val });
+  };
+
+  // Drag and drop states
+  const [draggedCategoryIndex, setDraggedCategoryIndex] = useState<number | null>(null);
+  const [draggedComponentInfo, setDraggedComponentInfo] = useState<{ catId: string; compIndex: number } | null>(null);
+
+  const handleCategoryDragStart = (e: React.DragEvent, index: number) => {
+    setDraggedCategoryIndex(index);
+    e.dataTransfer.effectAllowed = "move";
+    setDraggedComponentInfo(null);
+  };
+
+  const handleCategoryDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+  };
+
+  const handleCategoryDrop = (e: React.DragEvent, targetIndex: number) => {
+    e.preventDefault();
+    if (draggedCategoryIndex === null || draggedCategoryIndex === targetIndex) return;
+
+    const updatedCategories = [...project.categories];
+    const [removed] = updatedCategories.splice(draggedCategoryIndex, 1);
+    updatedCategories.splice(targetIndex, 0, removed);
+
+    const updatedProject = {
+      ...project,
+      categories: updatedCategories,
+    };
+    updateCurrentProject(updatedProject);
+    setDraggedCategoryIndex(null);
+    showToast("Reordered categories!");
+  };
+
+  const handleComponentDragStart = (e: React.DragEvent, catId: string, compIndex: number) => {
+    e.stopPropagation();
+    setDraggedComponentInfo({ catId, compIndex });
+    setDraggedCategoryIndex(null);
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const handleComponentDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+  };
+
+  const handleComponentDrop = (e: React.DragEvent, targetCatId: string, targetCompIndex: number) => {
+    e.preventDefault();
+    if (!draggedComponentInfo) return;
+    const { catId: sourceCatId, compIndex: sourceCompIndex } = draggedComponentInfo;
+
+    if (sourceCatId === targetCatId) {
+      if (sourceCompIndex === targetCompIndex) {
+        setDraggedComponentInfo(null);
+        return;
+      }
+      
+      const updatedCategories = project.categories.map(cat => {
+        if (cat.id === targetCatId) {
+          const comps = [...cat.components];
+          const [removed] = comps.splice(sourceCompIndex, 1);
+          comps.splice(targetCompIndex, 0, removed);
+          return { ...cat, components: comps };
+        }
+        return cat;
+      });
+
+      const updatedProject = {
+        ...project,
+        categories: updatedCategories
+      };
+      updateCurrentProject(updatedProject);
+      showToast("Reordered cost components!");
+    } else {
+      const sourceCat = project.categories.find(c => c.id === sourceCatId);
+      const targetCat = project.categories.find(c => c.id === targetCatId);
+      if (!sourceCat || !targetCat) return;
+
+      const sourceComps = [...sourceCat.components];
+      const [removed] = sourceComps.splice(sourceCompIndex, 1);
+
+      const targetComps = [...targetCat.components];
+      targetComps.splice(targetCompIndex, 0, removed);
+
+      const updatedCategories = project.categories.map(cat => {
+        if (cat.id === sourceCatId) {
+          return { ...cat, components: sourceComps };
+        }
+        if (cat.id === targetCatId) {
+          return { ...cat, components: targetComps };
+        }
+        return cat;
+      });
+
+      const updatedProject = {
+        ...project,
+        categories: updatedCategories
+      };
+      updateCurrentProject(updatedProject);
+      showToast(`Moved "${removed.name}" to category "${targetCat.name}"!`);
+    }
+
+    setDraggedComponentInfo(null);
+  };
+
+  // UI state
+  const [editingField, setEditingField] = useState<{
+    type: "project-name" | "project-date" | "project-version" | "vendor-name" | "category-name" | "component-name" | "criteria-name" | "criteria-desc" | null;
+    id?: string;
+    subId?: string;
+  }>({ type: null });
+
+  const [editValue, setEditValue] = useState("");
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Quotes File Attachment Vault States & Handlers
+  const fileVaultRef = useRef<HTMLInputElement>(null);
+  const [activeViewFile, setActiveViewFile] = useState<UploadedFile | null>(null);
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement> | React.DragEvent<HTMLDivElement>) => {
+    let files: FileList | null = null;
+    if ("files" in e.target && e.target.files) {
+      files = e.target.files;
+    } else if (e && "dataTransfer" in e && e.dataTransfer && e.dataTransfer.files) {
+      files = e.dataTransfer.files;
+    }
+    if (!files || files.length === 0) return;
+
+    Array.from(files).forEach((file) => {
+      // 1.5MB Safe Guard to safeguard Firestore document limits
+      if (file.size > 1.5 * 1024 * 1024) {
+        setToast({ message: `"${file.name}" is too large. Please limit attachment sizes to 1MB.`, type: "error" });
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64 = reader.result as string;
+        const newFile: UploadedFile = {
+          id: `file-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          base64,
+          uploadedAt: new Date().toLocaleDateString()
+        };
+
+        const updatedFiles = [...(project.uploadedFiles || []), newFile];
+        const updatedProject = {
+          ...project,
+          uploadedFiles: updatedFiles
+        };
+        updateCurrentProject(updatedProject);
+        setToast({ message: `Uploaded "${file.name}" to attachments!`, type: "success" });
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const downloadFile = (file: UploadedFile) => {
+    try {
+      const link = document.createElement("a");
+      link.href = file.base64;
+      link.download = file.name;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      setToast({ message: "Download failed. File may be corrupted.", type: "error" });
+    }
+  };
+
+  const deleteUploadedFile = (fileId: string) => {
+    const updatedFiles = (project.uploadedFiles || []).filter(f => f.id !== fileId);
+    const updatedProject = {
+      ...project,
+      uploadedFiles: updatedFiles
+    };
+    updateCurrentProject(updatedProject);
+    setToast({ message: "Attachment removed.", type: "info" });
+  };
+
+  const getFilesForVendor = (vendorId: string) => {
+    return (project.uploadedFiles || []).filter(f => f.vendorId === vendorId);
+  };
+
+  const handleVendorFileUpload = (vendorId: string, ev: React.ChangeEvent<HTMLInputElement>) => {
+    const files = ev.target.files;
+    if (!files || files.length === 0) return;
+
+    Array.from(files).forEach((file: any) => {
+      // 1MB restriction to safeguard Firestore
+      if (file.size > 1.0 * 1024 * 1024) {
+        setToast({ message: `"${file.name}" is too large. Please limit vendor attachments to 1MB.`, type: "error" });
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64 = reader.result as string;
+        const newFile: UploadedFile = {
+          id: `file-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          base64,
+          uploadedAt: new Date().toLocaleDateString(),
+          vendorId: vendorId
+        };
+
+        const updatedFiles = [...(project.uploadedFiles || []), newFile];
+        const updatedProject = {
+          ...project,
+          uploadedFiles: updatedFiles
+        };
+        updateCurrentProject(updatedProject);
+        setToast({ message: `Uploaded "${file.name}" and linked to vendor!`, type: "success" });
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  // Helper to decode base64 text for viewing
+  const getDecodedText = (base64Str: string) => {
+    try {
+      const arr = base64Str.split(",");
+      const b64 = arr[1] || arr[0];
+      return atob(b64);
+    } catch (err) {
+      return "Unable to decode raw data format. Please download and view locally.";
+    }
+  };
+
+  // Quick rating stars state for each vendor in the current project
+  // We can save qualitative ratings inside the project object.
+  // To avoid breaking the typescript model, let's add it dynamically or store it in project state
+  // We'll extend our calculations. We'll store ratings inside localStorage or as custom fields in the values
+  // Let's store ratings inside local React state or attach scorecards to project. We'll add standard scorecards
+  // directly in the project object. Let's make sure it operates gracefully even for imported projects that might not have it yet.
+  const [scorecards, setScorecards] = useState<Record<string, Record<string, Record<string, number>>>>(() => {
+    const saved = localStorage.getItem("quote_compare_scorecards");
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {}
+    }
+    // Default scorecards: [projectId][vendorId][criteria] = rating (1-5)
+    return {
+      "project-1": {
+        "vendor-a": { technical: 4, support: 5, ease: 3, value: 4 },
+        "vendor-b": { technical: 5, support: 4, ease: 4, value: 3 },
+        "vendor-c": { technical: 2, support: 2, ease: 5, value: 4 },
+        "vendor-new": { technical: 1, support: 1, ease: 1, value: 1 },
+      }
+    };
+  });
+
+  useEffect(() => {
+    localStorage.setItem("quote_compare_scorecards", JSON.stringify(scorecards));
+  }, [scorecards]);
+
+  const showToast = (message: string, type: "success" | "error" | "info" = "success") => {
+    setToast({ message, type });
+    setTimeout(() => {
+      setToast(null);
+    }, 4000);
+  };
+
+  // State update helper functions
+  const updateCurrentProject = (updated: QuoteProject) => {
+    setProjects(prev => prev.map(p => p.id === updated.id ? updated : p));
+  };
+
+  // Formatting helper
+  const formatCurrency = (amount: number) => {
+    const symbol = CURRENCY_SYMBOLS[project.currency] || "$";
+    return `${symbol}${amount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+  };
+
+  // Helper to determine annual scaling factor
+  const getComponentScaleFactor = (compName: string, compId: string, duration: 2 | 3, categoryComponents?: CostComponent[]): number => {
+    const nameLower = compName.toLowerCase();
+    const idLower = compId.toLowerCase();
+    
+    const isAnnual = 
+      nameLower.includes("annual") || 
+      nameLower.includes("recurring") || 
+      nameLower.includes("yearly") || 
+      nameLower.includes("subscription") ||
+      nameLower.includes("per year") ||
+      idLower.includes("annual") ||
+      idLower.includes("recurring") ||
+      idLower.includes("subscription");
+
+    if (!isAnnual) return 1;
+
+    const isYear1 = nameLower.includes("year 1") || nameLower.includes("yr 1") || nameLower.includes("y1") || idLower.includes("year-1") || idLower.includes("yr-1");
+    const isYear2 = nameLower.includes("year 2") || nameLower.includes("yr 2") || nameLower.includes("y2") || idLower.includes("year-2") || idLower.includes("yr-2");
+    const isYear3 = nameLower.includes("year 3") || nameLower.includes("yr 3") || nameLower.includes("y3") || idLower.includes("year-3") || idLower.includes("yr-3");
+
+    if (isYear1) return 1;
+    if (isYear2) {
+      if (duration === 2) {
+        return 1;
+      } else {
+        // Check if there's already a Year 3 component in the category
+        const hasYear3 = categoryComponents?.some(c => {
+          const cn = c.name.toLowerCase();
+          const ci = c.id.toLowerCase();
+          return cn.includes("year 3") || cn.includes("yr 3") || cn.includes("y3") || ci.includes("year-3") || ci.includes("yr-3");
+        });
+        return hasYear3 ? 1 : 2; // If custom Year 3 component is present, don't duplicate/scale Year 2
+      }
+    }
+    if (isYear3) {
+      return duration === 2 ? 0 : 1;
+    }
+
+    // Generic annual components (e.g. "Annual Support Fee") with no specific year suffix
+    return duration;
+  };
+
+  // Calculated utilities
+  const getCategoryTotalForVendor = (catId: string, venId: string): number => {
+    const category = project.categories.find(c => c.id === catId);
+    if (!category) return 0;
+    return category.components.reduce((sum, comp) => {
+      const val = project.costValues[catId]?.[comp.id]?.[venId] || 0;
+      const factor = getComponentScaleFactor(comp.name, comp.id, tcoYears, category.components);
+      return sum + (val * factor);
+    }, 0);
+  };
+
+  const getVendorGrandTotal = (venId: string): number => {
+    return project.categories.reduce((sum, cat) => {
+      return sum + getCategoryTotalForVendor(cat.id, venId);
+    }, 0);
+  };
+
+  // Find cheapest vendor based on financial GRAND TOTAL TCO
+  const getFinancialBriefing = () => {
+    const totals = project.vendors.map(v => ({
+      id: v.id,
+      name: v.name,
+      total: getVendorGrandTotal(v.id)
+    }));
+
+    // Filter out vendors with 0 total cost to avoid flagging unpriced vendors as cheapest
+    const pricedVendors = totals.filter(t => t.total > 0);
+    if (pricedVendors.length === 0) return null;
+
+    const sorted = [...pricedVendors].sort((a, b) => a.total - b.total);
+    const cheapest = sorted[0];
+    const mostExpensive = sorted[sorted.length - 1];
+    
+    // Calculate potential savings (compared to average or next cheapest)
+    let comparisonText = "";
+    let savingsAmount = 0;
+    if (sorted.length > 1) {
+      const runnerUp = sorted[1];
+      savingsAmount = runnerUp.total - cheapest.total;
+      const percentage = runnerUp.total > 0 ? ((savingsAmount / runnerUp.total) * 100).toFixed(1) : "0";
+      comparisonText = `saving ${percentage}% (${formatCurrency(savingsAmount)}) compared to ${runnerUp.name}`;
+    } else {
+      comparisonText = "is currently the only quoted vendor.";
+    }
+
+    return {
+      cheapest,
+      mostExpensive,
+      savingsAmount,
+      comparisonText,
+      totalPriced: pricedVendors.length
+    };
+  };
+
+  const briefing = getFinancialBriefing();
+
+  // Scorecard rating average
+  const getVendorScorecardAvg = (venId: string): number => {
+    const currentCriteria = project.criteria || [
+      { id: "technical", name: "Technical Competency", description: "API robustness, ERP/Invoicing standard compatibility" },
+      { id: "support", name: "SLA & Customer Support", description: "Response times, dedicated account rep, service coverage" },
+      { id: "ease", name: "Implementation Ease", description: "Ready connectors, onboarding speed, developer docs" },
+      { id: "value", name: "Business Integrity", description: "Vendor history, market share, financials viability" }
+    ];
+    const pScores = scorecards[project.id]?.[venId] || {};
+    let sum = 0;
+    let count = 0;
+    currentCriteria.forEach(crit => {
+      const val = pScores[crit.id] ?? 0;
+      if (val > 0) {
+        sum += val;
+        count++;
+      }
+    });
+    if (count === 0) return 0;
+    return Number((sum / count).toFixed(1));
+  };
+
+  // Field Edit Handlers
+  const startEditing = (type: typeof editingField.type, id?: string, subId?: string, currentVal: string = "") => {
+    setEditingField({ type, id, subId });
+    setEditValue(currentVal);
+  };
+
+  const saveInlineEdit = () => {
+    if (!editingField.type) return;
+
+    const updated = { ...project };
+
+    if (editingField.type === "project-name") {
+      updated.name = editValue.trim() || "Untitled Comparison";
+      updateCurrentProject(updated);
+      showToast("Comparison project renamed");
+    } else if (editingField.type === "project-date") {
+      updated.date = editValue.trim() || new Date().toISOString().split('T')[0];
+      updateCurrentProject(updated);
+      showToast("Date updated");
+    } else if (editingField.type === "project-version") {
+      updated.version = editValue.trim() || "v1.0";
+      updateCurrentProject(updated);
+    } else if (editingField.type === "vendor-name" && editingField.id) {
+      const vId = editingField.id;
+      const newName = editValue.trim() || "Vendor";
+      updated.vendors = updated.vendors.map(v => v.id === vId ? { ...v, name: newName } : v);
+      updateCurrentProject(updated);
+      showToast(`Vendor renamed to "${newName}"`);
+    } else if (editingField.type === "category-name" && editingField.id) {
+      const catId = editingField.id;
+      const newName = editValue.trim() || "Category Name";
+      updated.categories = updated.categories.map(c => c.id === catId ? { ...c, name: newName } : c);
+      updateCurrentProject(updated);
+      showToast(`Category renamed to "${newName}"`);
+    } else if (editingField.type === "component-name" && editingField.id && editingField.subId) {
+      const catId = editingField.id;
+      const compId = editingField.subId;
+      const newName = editValue.trim() || "Cost Component";
+      updated.categories = updated.categories.map(c => {
+        if (c.id === catId) {
+          return {
+            ...c,
+            components: c.components.map(comp => comp.id === compId ? { ...comp, name: newName } : comp)
+          };
+        }
+        return c;
+      });
+      updateCurrentProject(updated);
+    } else if (editingField.type === "criteria-name" && editingField.id) {
+      const critId = editingField.id;
+      const newName = editValue.trim() || "Evaluation Criteria";
+      const currentCriteria = project.criteria || [
+        { id: "technical", name: "Technical Competency", description: "API robustness, ERP/Invoicing standard compatibility" },
+        { id: "support", name: "SLA & Customer Support", description: "Response times, dedicated account rep, service coverage" },
+        { id: "ease", name: "Implementation Ease", description: "Ready connectors, onboarding speed, developer docs" },
+        { id: "value", name: "Business Integrity", description: "Vendor history, market share, financials viability" }
+      ];
+      updated.criteria = currentCriteria.map(c => c.id === critId ? { ...c, name: newName } : c);
+      updateCurrentProject(updated);
+      showToast(`Criteria renamed to "${newName}"`);
+    } else if (editingField.type === "criteria-desc" && editingField.id) {
+      const critId = editingField.id;
+      const newDesc = editValue.trim() || "";
+      const currentCriteria = project.criteria || [
+        { id: "technical", name: "Technical Competency", description: "API robustness, ERP/Invoicing standard compatibility" },
+        { id: "support", name: "SLA & Customer Support", description: "Response times, dedicated account rep, service coverage" },
+        { id: "ease", name: "Implementation Ease", description: "Ready connectors, onboarding speed, developer docs" },
+        { id: "value", name: "Business Integrity", description: "Vendor history, market share, financials viability" }
+      ];
+      updated.criteria = currentCriteria.map(c => c.id === critId ? { ...c, description: newDesc } : c);
+      updateCurrentProject(updated);
+    }
+
+    setEditingField({ type: null });
+  };
+
+  // Add Evaluation Criteria
+  const addCriteria = () => {
+    const updated = { ...project };
+    const currentCriteria = updated.criteria || [
+      { id: "technical", name: "Technical Competency", description: "API robustness, ERP/Invoicing standard compatibility" },
+      { id: "support", name: "SLA & Customer Support", description: "Response times, dedicated account rep, service coverage" },
+      { id: "ease", name: "Implementation Ease", description: "Ready connectors, onboarding speed, developer docs" },
+      { id: "value", name: "Business Integrity", description: "Vendor history, market share, financials viability" }
+    ];
+    const randomHex = Math.random().toString(36).substring(2, 7);
+    const newId = `crit-${randomHex}`;
+    const newName = "New Evaluation Criteria";
+    const newDesc = "Define the qualitative metric description...";
+
+    updated.criteria = [...currentCriteria, { id: newId, name: newName, description: newDesc }];
+
+    // Set fallback rating (3 stars) for all vendors under this new criteria
+    setScorecards(prev => {
+      const projId = project.id;
+      const currentProj = prev[projId] || {};
+      const nextProj = { ...currentProj };
+      project.vendors.forEach(v => {
+        nextProj[v.id] = {
+          ...(nextProj[v.id] || {}),
+          [newId]: 3
+        };
+      });
+      return {
+        ...prev,
+        [projId]: nextProj
+      };
+    });
+
+    updateCurrentProject(updated);
+    showToast("Added scorecard criteria line!");
+
+    setTimeout(() => {
+      startEditing("criteria-name", newId, undefined, newName);
+    }, 100);
+  };
+
+  // Remove Evaluation Criteria
+  const deleteCriteria = (critId: string, critName: string) => {
+    const updated = { ...project };
+    const currentCriteria = updated.criteria || [
+      { id: "technical", name: "Technical Competency", description: "API robustness, ERP/Invoicing standard compatibility" },
+      { id: "support", name: "SLA & Customer Support", description: "Response times, dedicated account rep, service coverage" },
+      { id: "ease", name: "Implementation Ease", description: "Ready connectors, onboarding speed, developer docs" },
+      { id: "value", name: "Business Integrity", description: "Vendor history, market share, financials viability" }
+    ];
+    if (currentCriteria.length <= 1) {
+      showToast("Cannot delete the last remaining scorecard criteria.", "error");
+      return;
+    }
+    if (!window.confirm(`Are you sure you want to remove criteria "${critName}"?`)) {
+      return;
+    }
+
+    updated.criteria = currentCriteria.filter(c => c.id !== critId);
+
+    // Prune ratings
+    setScorecards(prev => {
+      const projId = project.id;
+      const currentProj = prev[projId] || {};
+      const nextProj = { ...currentProj };
+      Object.keys(nextProj).forEach(vId => {
+        if (nextProj[vId]) {
+          const nextScores = { ...nextProj[vId] };
+          delete nextScores[critId];
+          nextProj[vId] = nextScores;
+        }
+      });
+      return {
+        ...prev,
+        [projId]: nextProj
+      };
+    });
+
+    updateCurrentProject(updated);
+    showToast(`Removed criteria "${critName}"`);
+  };
+
+  const handleCellChange = (catId: string, compId: string, venId: string, valueStr: string) => {
+    const numericVal = parseFloat(valueStr.replace(/[^0-9.-]/g, "")) || 0;
+    
+    // Create copy of project
+    const updated = { ...project };
+    if (!updated.costValues[catId]) updated.costValues[catId] = {};
+    if (!updated.costValues[catId][compId]) updated.costValues[catId][compId] = {};
+    
+    updated.costValues[catId][compId][venId] = numericVal;
+    updateCurrentProject(updated);
+  };
+
+  const handleRatingChange = (venId: string, criteria: string, rating: number) => {
+    const projId = project.id;
+    setScorecards(prev => {
+      const currentProj = prev[projId] || {};
+      const currentVendor = currentProj[venId] || { technical: 0, support: 0, ease: 0, value: 0 };
+      
+      return {
+        ...prev,
+        [projId]: {
+          ...currentProj,
+          [venId]: {
+            ...currentVendor,
+            [criteria]: rating
+          }
+        }
+      };
+    });
+  };
+
+  const handleCategoryCommentChange = (catId: string, comment: string) => {
+    const updated = { ...project };
+    if (!updated.comments) updated.comments = {};
+    updated.comments[catId] = comment;
+    updateCurrentProject(updated);
+  };
+
+  const handleVendorNotesChange = (venId: string, notes: string) => {
+    const updated = { ...project };
+    if (!updated.vendorNotes) updated.vendorNotes = {};
+    updated.vendorNotes[venId] = notes;
+    updateCurrentProject(updated);
+  };
+
+  const handleGeneralNotesChange = (text: string) => {
+    const updated = { ...project };
+    updated.generalNotes = text;
+    updateCurrentProject(updated);
+  };
+
+  // Add Vendor Column
+  const addNewVendor = () => {
+    const updated = { ...project };
+    const randomHex = Math.random().toString(36).substring(2, 7);
+    const newId = `vendor-${randomHex}`;
+    const newName = `New Vendor ${String.fromCharCode(65 + updated.vendors.length)}`;
+    
+    updated.vendors.push({ id: newId, name: newName });
+    
+    // Initialize empty values
+    updated.categories.forEach(cat => {
+      if (!updated.costValues[cat.id]) updated.costValues[cat.id] = {};
+      cat.components.forEach(comp => {
+        if (!updated.costValues[cat.id][comp.id]) updated.costValues[cat.id][comp.id] = {};
+        updated.costValues[cat.id][comp.id][newId] = 0;
+      });
+    });
+
+    // Initialize qualitative scorecard
+    setScorecards(prev => {
+      const currentProj = prev[project.id] || {};
+      return {
+        ...prev,
+        [project.id]: {
+          ...currentProj,
+          [newId]: { technical: 3, support: 3, ease: 3, value: 3 }
+        }
+      };
+    });
+
+    updateCurrentProject(updated);
+    showToast(`Added ${newName}. Columns added to all cost tables.`);
+    // Auto edit vendor name
+    setTimeout(() => {
+      startEditing("vendor-name", newId, undefined, newName);
+    }, 100);
+  };
+
+  // Delete Vendor Column
+  const deleteVendor = (venId: string, venName: string) => {
+    if (project.vendors.length <= 1) {
+      showToast("Cannot delete the last remaining vendor column.", "error");
+      return;
+    }
+    if (!window.confirm(`Are you sure you want to delete vendor "${venName}" and all associated cost entries?`)) {
+      return;
+    }
+
+    const updated = { ...project };
+    updated.vendors = updated.vendors.filter(v => v.id !== venId);
+
+    // Prune values mapping
+    Object.keys(updated.costValues).forEach(catId => {
+      Object.keys(updated.costValues[catId]).forEach(compId => {
+        if (updated.costValues[catId][compId]) {
+          delete updated.costValues[catId][compId][venId];
+        }
+      });
+    });
+
+    updateCurrentProject(updated);
+    showToast(`Deleted vendor ${venName}`);
+  };
+
+  // Add Cost Category Table
+  const addNewCategory = () => {
+    const updated = { ...project };
+    const randomHex = Math.random().toString(36).substring(2, 7);
+    const newCatId = `category-${randomHex}`;
+    const newCatName = `Custom Category ${updated.categories.length + 1}`;
+
+    const newCategory: Category = {
+      id: newCatId,
+      name: newCatName,
+      components: [
+        { id: "setup-cost", name: "Setup Cost" },
+        { id: "one-time-integration", name: "One-time Integration" },
+        { id: "annual-fee-year-1", name: "Annual Fee — Year 1" },
+        { id: "annual-fee-year-2", name: "Annual Fee — Year 2" }
+      ]
+    };
+
+    updated.categories.push(newCategory);
+
+    // Initialize values mapping with 0s
+    updated.costValues[newCatId] = {
+      "setup-cost": {},
+      "one-time-integration": {},
+      "annual-fee-year-1": {},
+      "annual-fee-year-2": {}
+    };
+
+    updated.vendors.forEach(v => {
+      updated.costValues[newCatId]["setup-cost"][v.id] = 0;
+      updated.costValues[newCatId]["one-time-integration"][v.id] = 0;
+      updated.costValues[newCatId]["annual-fee-year-1"][v.id] = 0;
+      updated.costValues[newCatId]["annual-fee-year-2"][v.id] = 0;
+    });
+
+    updated.comments[newCatId] = "";
+
+    updateCurrentProject(updated);
+    showToast(`Created category "${newCatName}" with default cost components.`);
+    
+    // Scroll to the newly added category
+    setTimeout(() => {
+      const el = document.getElementById(newCatId);
+      if (el) el.scrollIntoView({ behavior: "smooth" });
+    }, 150);
+  };
+
+  // Delete Category
+  const deleteCategory = (catId: string, catName: string) => {
+    if (project.categories.length <= 1) {
+      showToast("Cannot delete the last remaining cost category.", "error");
+      return;
+    }
+    if (!window.confirm(`Are you sure you want to delete category "${catName}" and all of its row entries?`)) {
+      return;
+    }
+
+    const updated = { ...project };
+    updated.categories = updated.categories.filter(c => c.id !== catId);
+    delete updated.costValues[catId];
+    if (updated.comments) {
+      delete updated.comments[catId];
+    }
+
+    updateCurrentProject(updated);
+    showToast(`Deleted category ${catName}`);
+  };
+
+  // Add Cost Row (Component) to Category
+  const addCostComponent = (catId: string) => {
+    const updated = { ...project };
+    const cat = updated.categories.find(c => c.id === catId);
+    if (!cat) return;
+
+    const randomHex = Math.random().toString(36).substring(2, 7);
+    const newCompId = `component-${randomHex}`;
+    const newCompName = "New Cost Component";
+
+    const newComp: CostComponent = { id: newCompId, name: newCompName };
+    cat.components.push(newComp);
+
+    // Initialize vendor columns to 0
+    if (!updated.costValues[catId]) updated.costValues[catId] = {};
+    updated.costValues[catId][newCompId] = {};
+    updated.vendors.forEach(v => {
+      updated.costValues[catId][newCompId][v.id] = 0;
+    });
+
+    updateCurrentProject(updated);
+    showToast("Added new entry row. Type component details directly.");
+
+    setTimeout(() => {
+      startEditing("component-name", catId, newCompId, newCompName);
+    }, 100);
+  };
+
+  // Delete Cost Component Row
+  const deleteCostComponent = (catId: string, compId: string, compName: string) => {
+    const updated = { ...project };
+    const cat = updated.categories.find(c => c.id === catId);
+    if (!cat) return;
+
+    if (cat.components.length <= 1) {
+      showToast("Cannot empty all cost components. Please delete the entire category instead.", "error");
+      return;
+    }
+
+    cat.components = cat.components.filter(c => c.id !== compId);
+    if (updated.costValues[catId] && updated.costValues[catId][compId]) {
+      delete updated.costValues[catId][compId];
+    }
+
+    updateCurrentProject(updated);
+    showToast(`Deleted component row "${compName}"`);
+  };
+
+  // Project Switching & Cloning & Resets
+  const createNewProject = () => {
+    const randomHex = Math.random().toString(36).substring(2, 7);
+    const newProjId = `project-${randomHex}`;
+    const newProj: QuoteProject = {
+      id: newProjId,
+      name: `Quote Comparison Project ${projects.length + 1}`,
+      date: new Date().toISOString().split('T')[0],
+      version: "v1.0",
+      currency: "USD",
+      vendors: [
+        { id: "vendor-a", name: "Vendor A" },
+        { id: "vendor-b", name: "Vendor B" },
+      ],
+      categories: [
+        {
+          id: "e-invoicing",
+          name: "e-Invoicing",
+          components: [
+            { id: "setup-cost", name: "Setup Cost" },
+            { id: "one-time-integration", name: "One-time Integration" },
+            { id: "annual-fee-year-1", name: "Annual Fee — Year 1" },
+            { id: "annual-fee-year-2", name: "Annual Fee — Year 2" },
+          ]
+        }
+      ],
+      costValues: {
+        "e-invoicing": {
+          "setup-cost": { "vendor-a": 0, "vendor-b": 0 },
+          "one-time-integration": { "vendor-a": 0, "vendor-b": 0 },
+          "annual-fee-year-1": { "vendor-a": 0, "vendor-b": 0 },
+          "annual-fee-year-2": { "vendor-a": 0, "vendor-b": 0 }
+        }
+      },
+      comments: {
+        "e-invoicing": ""
+      },
+      vendorNotes: {
+        "vendor-a": "",
+        "vendor-b": ""
+      },
+      generalNotes: "New vendor analysis report."
+    };
+
+    setProjects(prev => [...prev, newProj]);
+    setActiveProjectId(newProjId);
+    showToast("Created a new comparison template!");
+  };
+
+  const cloneCurrentProject = () => {
+    const randomHex = Math.random().toString(36).substring(2, 7);
+    const newProjId = `project-${randomHex}`;
+    const cloned: QuoteProject = JSON.parse(JSON.stringify(project));
+    cloned.id = newProjId;
+    cloned.name = `${cloned.name} (Copy)`;
+    cloned.date = new Date().toISOString().split('T')[0];
+
+    // Clone scorecard data as well
+    const scCopy = scorecards[project.id] ? JSON.parse(JSON.stringify(scorecards[project.id])) : null;
+    if (scCopy) {
+      setScorecards(prev => ({
+        ...prev,
+        [newProjId]: scCopy
+      }));
+    }
+
+    setProjects(prev => [...prev, cloned]);
+    setActiveProjectId(newProjId);
+    showToast(`Cloned comparison model: "${cloned.name}"`);
+  };
+
+  const resetToSample = () => {
+    if (window.confirm("This will overwrite the current project with the default sample data. Proceed?")) {
+      // Find default template
+      const template = DEFAULT_PROJECTS[0];
+      const resetProject = JSON.parse(JSON.stringify(template));
+      resetProject.id = project.id; // Preserve active ID
+      
+      setProjects(prev => prev.map(p => p.id === project.id ? resetProject : p));
+      
+      // Reset scorecard
+      setScorecards(prev => ({
+        ...prev,
+        [project.id]: {
+          "vendor-a": { technical: 4, support: 5, ease: 3, value: 4 },
+          "vendor-b": { technical: 5, support: 4, ease: 4, value: 3 },
+          "vendor-c": { technical: 2, support: 2, ease: 5, value: 4 },
+          "vendor-new": { technical: 1, support: 1, ease: 1, value: 1 },
+        }
+      }));
+
+      showToast("Restored initial test data comparison state!");
+    }
+  };
+
+  const deleteCurrentProject = async () => {
+    if (projects.length <= 1) {
+      showToast("Cannot delete the last remaining project.", "error");
+      return;
+    }
+    if (!window.confirm(`Are you sure you want to delete comparison project "${project.name}"?`)) {
+      return;
+    }
+
+    const idToDelete = project.id;
+    const remaining = projects.filter(p => p.id !== idToDelete);
+    setProjects(remaining);
+    setActiveProjectId(remaining[0].id);
+    showToast("Deleted comparison project.");
+
+    if (isFirebaseConfigured && db) {
+      try {
+        await deleteDoc(doc(db, "projects", idToDelete));
+        console.log(`Document ${idToDelete} deleted successfully from Firestore.`);
+      } catch (err) {
+        console.error(`Failed to delete document ${idToDelete} from Firestore:`, err);
+      }
+    }
+  };
+
+  // Export JSON file
+  const exportToJson = () => {
+    const exportObj = {
+      project,
+      scorecard: scorecards[project.id] || {}
+    };
+    
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportObj, null, 2));
+    const downloadAnchor = document.createElement("a");
+    downloadAnchor.setAttribute("href", dataStr);
+    const fileName = `${project.name.toLowerCase().replace(/[^a-z0-9]/g, "_")}_quote_comparison.json`;
+    downloadAnchor.setAttribute("download", fileName);
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+    showToast("JSON comparison model exported successfully!");
+  };
+
+  // Export currently active project table data to a clean CSV format
+  const exportToCsv = () => {
+    try {
+      const rows: string[][] = [];
+
+      // Escapes CSV values with double quotes and escaping embedded quotes
+      const escape = (val: string | number | undefined | null) => {
+        const str = String(val ?? "");
+        if (str.includes(",") || str.includes('"') || str.includes("\n") || str.includes("\r")) {
+          return `"${str.replace(/"/g, '""')}"`;
+        }
+        return str;
+      };
+
+      // 1. Metadata Block
+      rows.push(["QUOTE COMPARISON PROJECT SPECIFICATION"]);
+      rows.push(["Project ID", project.id]);
+      rows.push(["Project Name", project.name]);
+      rows.push(["Evaluation Date", project.date]);
+      rows.push(["Sheet Version", project.version]);
+      rows.push(["Currency", project.currency]);
+      rows.push([]); // blank divider
+
+      // 2. Cost Analysis Matrix
+      rows.push(["SECTION 1: TCO COST BREAKDOWN MATRIX"]);
+      const costHeaderRow = ["Category / Component Item"];
+      project.vendors.forEach(v => {
+        costHeaderRow.push(`${v.name} (${project.currency})`);
+      });
+      rows.push(costHeaderRow);
+
+      project.categories.forEach(cat => {
+        // Category section Header
+        const catGroupRow = [`[Category] ${cat.name}`];
+        project.vendors.forEach(() => catGroupRow.push(""));
+        rows.push(catGroupRow);
+
+        // Component line-items
+        cat.components.forEach(comp => {
+          const compRow = [`  - ${comp.name}`];
+          project.vendors.forEach(v => {
+            const val = project.costValues[cat.id]?.[comp.id]?.[v.id] ?? 0;
+            compRow.push(val.toString());
+          });
+          rows.push(compRow);
+        });
+
+        // Category Total aggregate row
+        const catTotalRow = [`  - ${cat.name} Total Sum`];
+        project.vendors.forEach(v => {
+          const totalVal = getCategoryTotalForVendor(cat.id, v.id);
+          catTotalRow.push(totalVal.toString());
+        });
+        rows.push(catTotalRow);
+        rows.push([]); // formatting spacing
+      });
+
+      rows.push([]);
+
+      // 3. Multi-Criteria Qualitative Scorecard Matrix
+      rows.push(["SECTION 2: QUALITATIVE EVALUATION SCORECARD"]);
+      const scorecardHeaderRow = ["Evaluation Criteria Metric", "Metric Description / Parameters"];
+      project.vendors.forEach(v => {
+        scorecardHeaderRow.push(`${v.name} (1 to 5 Stars)`);
+      });
+      rows.push(scorecardHeaderRow);
+
+      const criteriaList = project.criteria || [
+        { id: "technical", name: "Technical Competency", description: "API robustness, ERP/Invoicing standard compatibility" },
+        { id: "support", name: "SLA & Customer Support", description: "Response times, dedicated account rep, service coverage" },
+        { id: "ease", name: "Implementation Ease", description: "Ready connectors, onboarding speed, developer docs" },
+        { id: "value", name: "Business Integrity", description: "Vendor history, market share, financials viability" }
+      ];
+
+      criteriaList.forEach(crit => {
+        const critRow = [crit.name, crit.description];
+        project.vendors.forEach(v => {
+          const score = scorecards[project.id]?.[v.id]?.[crit.id] || 3; // default is 3
+          critRow.push(score.toString());
+        });
+        rows.push(critRow);
+      });
+
+      // Overall Score rating line
+      const scorecardAvgRow = ["Overall Average Score Rating", "Criteria Mean Value"];
+      project.vendors.forEach(v => {
+        const avg = getVendorScorecardAvg(v.id);
+        scorecardAvgRow.push(avg.toString());
+      });
+      rows.push(scorecardAvgRow);
+
+      rows.push([]);
+      rows.push([]);
+
+      // 4. Grand TCO Cost Summary Matrix
+      rows.push([`SECTION 3: SUMMARY & ${tcoYears}-YEAR GRAND TOTAL TCO`]);
+      const summaryHeaderRow = ["Summary Category"];
+      project.vendors.forEach(v => {
+        summaryHeaderRow.push(`${v.name} (${project.currency})`);
+      });
+      rows.push(summaryHeaderRow);
+
+      project.categories.forEach(cat => {
+        const row = [cat.name];
+        project.vendors.forEach(v => {
+          const totalVal = getCategoryTotalForVendor(cat.id, v.id);
+          row.push(totalVal.toString());
+        });
+        rows.push(row);
+      });
+
+      // Grand TCO summing line
+      const grandTotalRow = ["GRAND TOTAL TCO ESTIMATE"];
+      project.vendors.forEach(v => {
+        const grandVal = getVendorGrandTotal(v.id);
+        grandTotalRow.push(grandVal.toString());
+      });
+      rows.push(grandTotalRow);
+
+      rows.push([]);
+      rows.push([]);
+
+      // 5. Procurement Commentary & Section Notes
+      rows.push(["SECTION 4: QUALITATIVE NOTES & PROCUREMENT COMMENTARY"]);
+      rows.push(["Vendor Name", "Procurement Analysis Notes"]);
+      project.vendors.forEach(v => {
+        const vendorNote = project.vendorNotes?.[v.id] || "No notes registered.";
+        rows.push([v.name, vendorNote]);
+      });
+
+      rows.push([]);
+      rows.push(["General Project Evaluation Notes", project.generalNotes || "No general procurement notes specified."]);
+
+      // Download triggered via standard Blob strategy
+      const csvString = "\uFEFF" + rows.map(r => r.map(escape).join(",")).join("\n");
+      const blob = new Blob([csvString], { type: "text/csv;charset=utf-8;" });
+      const downloadUrl = URL.createObjectURL(blob);
+      const downloadAnchor = document.createElement("a");
+      downloadAnchor.setAttribute("href", downloadUrl);
+      const safeName = project.name.toLowerCase().replace(/[^a-z0-9]/g, "_");
+      downloadAnchor.setAttribute("download", `${safeName}_quote_comparison_report.csv`);
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      downloadAnchor.remove();
+      URL.revokeObjectURL(downloadUrl);
+
+      showToast("CSV sheet exported successfully for Excel/Accounting!");
+    } catch (err: any) {
+      console.error(err);
+      showToast("Failed to output CSV file link", "error");
+    }
+  };
+
+  // Import JSON file
+  const triggerFileSelect = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleJsonImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    const file = files[0];
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const jsonStr = event.target?.result as string;
+        const parsed = JSON.parse(jsonStr);
+
+        // Simple validation checks
+        if (!parsed.project || !parsed.project.vendors || !parsed.project.categories || !parsed.project.costValues) {
+          throw new Error("Invalid format. File must contain direct quote comparison schemas.");
+        }
+
+        const importedProj = parsed.project as QuoteProject;
+        // Make sure it has unique project ID to avoid collides
+        const randomHex = Math.random().toString(36).substring(2, 7);
+        importedProj.id = `imported-${randomHex}`;
+        importedProj.name = `${importedProj.name} (Imported)`;
+
+        setProjects(prev => [...prev, importedProj]);
+        setActiveProjectId(importedProj.id);
+        
+        if (parsed.scorecard) {
+          setScorecards(prev => ({
+            ...prev,
+            [importedProj.id]: parsed.scorecard
+          }));
+        }
+
+        setImportError(null);
+        showToast(`Successfully imported comparison model: "${importedProj.name}"`);
+      } catch (err: any) {
+        setImportError(`Failed to load file: ${err.message || "Invalid JSON format"}`);
+        showToast("Import failed", "error");
+      }
+    };
+    reader.readAsText(file);
+    // Reset file input value
+    e.target.value = "";
+  };
+
+  // Currency select handler
+  const handleCurrencyChange = (currency: string) => {
+    const updated = { ...project };
+    updated.currency = currency;
+    updateCurrentProject(updated);
+    showToast(`Currency changed to ${currency}`);
+  };
+
+  // Render Stacked Bar SVG heights calculation
+  // Returns relative heights and visual segments for rendering custom SVG
+  const getChartData = () => {
+    const data = project.vendors.map(v => {
+      const gTotal = getVendorGrandTotal(v.id);
+      
+      // Calculate split per category
+      const categoriesSplit = project.categories.map((cat, idx) => {
+        const catTotal = getCategoryTotalForVendor(cat.id, v.id);
+        return {
+          categoryId: cat.id,
+          categoryName: cat.name,
+          value: catTotal,
+          color: Object.values(CATEGORY_COLORS)[idx % Object.values(CATEGORY_COLORS).length] || CATEGORY_COLORS.default
+        };
+      });
+
+      return {
+        vendorId: v.id,
+        vendorName: v.name,
+        grandTotal: gTotal,
+        splits: categoriesSplit
+      };
+    });
+
+    const maxTotal = Math.max(...data.map(d => d.grandTotal), 1000); // Minimum 1000 threshold to keep bars nicely proportioned
+    return { data, maxTotal };
+  };
+
+  const { data: chartData, maxTotal } = getChartData();
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-800 font-sans antialiased flex flex-col pb-24 print:bg-white print:pb-0 relative overflow-hidden">
+      {/* Mesh Gradient Background Accents */}
+      <div className="absolute -top-24 -left-24 w-96 h-96 bg-blue-100 rounded-full blur-[120px] opacity-60 pointer-events-none"></div>
+      <div className="absolute top-1/2 -right-24 w-85 h-85 bg-indigo-100 rounded-full blur-[110px] opacity-50 pointer-events-none"></div>
+      <div className="absolute -bottom-24 left-1/3 w-80 h-80 bg-teal-50 rounded-full blur-[100px] opacity-40 pointer-events-none"></div>
+      
+      {/* Toast Notification */}
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2 bg-slate-900 text-white px-4 py-3 rounded-xl shadow-xl border border-slate-700 animate-slide-up print:hidden">
+          <CheckCircle size={18} className="text-emerald-400" />
+          <span className="text-sm font-medium">{toast.message}</span>
+        </div>
+      )}
+
+      {/* Top Banner Navigation */}
+      <header className="sticky top-0 z-40 border-b border-white/40 bg-white/75 backdrop-blur-md shadow-xs print:relative print:border-0 print:shadow-none print:bg-transparent">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-indigo-600 rounded-lg flex items-center justify-center text-white font-bold text-base shadow-md shadow-indigo-100">
+              Q
+            </div>
+            <div>
+              <h1 className="text-base font-extrabold text-indigo-600 leading-none">VORTEX QuoteRank</h1>
+              <p className="text-[10px] text-slate-400 uppercase tracking-widest mt-1">Strategic Procurement Suite</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 print:hidden">
+            <button 
+              onClick={createNewProject}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 text-indigo-700 text-xs font-semibold rounded-lg hover:bg-indigo-100 transition duration-150 cursor-pointer"
+            >
+              <PlusCircle size={14} /> Add Project
+            </button>
+            <button 
+              onClick={cloneCurrentProject}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 text-slate-700 text-xs font-semibold rounded-lg hover:bg-slate-100 transition duration-150 cursor-pointer"
+              title="Duplicate current sheet structure and records"
+            >
+              <Copy size={14} /> Clone
+            </button>
+            <button 
+              onClick={resetToSample}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 text-slate-600 hover:text-slate-900 text-xs font-semibold rounded-lg hover:bg-slate-100 transition duration-150 cursor-pointer"
+              title="Restore initial TEST template data"
+            >
+              <RefreshCw size={13} /> Reset
+            </button>
+            <div className="h-6 w-px bg-slate-200 mx-1"></div>
+            <button 
+              onClick={exportToJson}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 text-white hover:bg-slate-800 text-xs font-semibold rounded-lg transition duration-150 cursor-pointer"
+              title="Download local JSON file backup"
+            >
+              <FileDown size={14} /> Export Backup
+            </button>
+            <button 
+              onClick={exportToCsv}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition duration-150 cursor-pointer shadow-xs"
+              title="Export currently active project comparison values to Excel/CSV format"
+            >
+              <FileSpreadsheet size={14} /> Export CSV
+            </button>
+            <button 
+              onClick={triggerFileSelect}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs font-semibold rounded-lg transition duration-150 cursor-pointer"
+              title="Load saved comparison JSON back"
+            >
+              <FileUp size={14} /> Load Backup
+            </button>
+            <input 
+              type="file" 
+              ref={fileInputRef} 
+              onChange={handleJsonImport} 
+              accept=".json" 
+              className="hidden" 
+            />
+            <button 
+              onClick={() => window.print()}
+              className="p-1.5 ml-1 border border-slate-200 rounded-lg text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 hover:border-indigo-150 transition cursor-pointer"
+              title="Print to PDF Report"
+            >
+              <Printer size={16} />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full flex flex-col gap-8">
+        
+        {/* Project Selector Sidebar panel / info bar */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200/40 pb-5 print:hidden">
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Comparison Vault:</span>
+            <select
+              value={activeProjectId}
+              onChange={(e) => setActiveProjectId(e.target.value)}
+              className="bg-white/80 border border-white/60 text-slate-800 rounded-lg px-3 py-1.5 text-sm font-semibold focus:outline-hidden focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 max-w-xs shadow-3xs backdrop-blur-xs"
+            >
+              {projects.map((proj) => (
+                <option key={proj.id} value={proj.id}>
+                  {proj.name}
+                </option>
+              ))}
+            </select>
+            {projects.length > 1 && (
+              <button
+                onClick={deleteCurrentProject}
+                className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg transition"
+                title="Delete current comparison"
+              >
+                <Trash2 size={16} />
+              </button>
+            )}
+          </div>
+
+          {importError && (
+            <div className="bg-rose-50 border border-rose-100 text-rose-700 text-xs px-3 py-1.5 rounded-lg flex items-center justify-between gap-1">
+              <span>{importError}</span>
+              <button onClick={() => setImportError(null)} className="p-0.5 hover:bg-rose-100 rounded">
+                <X size={12} />
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* METADATA STRIP PANEL */}
+        <section className="bg-white/60 backdrop-blur-xl rounded-2xl border border-white/60 p-6 md:p-8 shadow-xl flex flex-col gap-6 relative print:p-0 print:border-0 print:shadow-none">
+          <div className="flex flex-col md:flex-row md:items-start justify-between gap-6">
+            <div className="flex-1">
+              <div className="group relative flex items-center">
+                {editingField.type === "project-name" ? (
+                  <div className="flex items-center gap-2 py-1 w-full max-w-lg">
+                    <input
+                      type="text"
+                      value={editValue}
+                      onChange={(e) => setEditValue(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
+                      autoFocus
+                      className="text-2xl md:text-3xl font-extrabold text-slate-900 border-b-2 border-indigo-500 focus:outline-hidden w-full pb-1"
+                    />
+                    <button onClick={saveInlineEdit} className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg">
+                      <Check size={18} />
+                    </button>
+                    <button onClick={() => setEditingField({ type: null })} className="p-1.5 text-slate-400 hover:bg-slate-50 rounded-lg">
+                      <X size={18} />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 group">
+                    <h2 
+                      onClick={() => startEditing("project-name", undefined, undefined, project.name)}
+                      className="text-2xl md:text-3xl font-black text-slate-900 tracking-tight cursor-pointer hover:text-indigo-600 transition"
+                      title="Double-click to rename comparison sheet"
+                    >
+                      {project.name}
+                    </h2>
+                  </div>
+                )}
+              </div>
+              <p className="text-sm text-slate-500 mt-1.5 max-w-xl">
+                Dynamic cost comparison analysis & Total Cost of Ownership ({tcoYears} Years TCO). Set up custom components, dynamic columns, ratings, and executive summary.
+              </p>
+            </div>
+
+            {/* Editable Fields strip */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-x-6 gap-y-4 bg-white/40 backdrop-blur-md p-4 py-3 rounded-xl border border-white/35 min-w-[280px] print:bg-transparent print:border-0 print:p-0">
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[10px] font-bold text-slate-400 tracking-wider uppercase flex items-center gap-1">
+                  <Calendar size={11} /> Review Date
+                </span>
+                {editingField.type === "project-date" ? (
+                  <input
+                    type="date"
+                    value={editValue}
+                    onChange={(e) => setEditValue(e.target.value)}
+                    onBlur={saveInlineEdit}
+                    onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
+                    autoFocus
+                    className="text-xs font-semibold text-slate-800 bg-white border border-indigo-200 px-1 py-0.5 rounded focus:outline-hidden"
+                  />
+                ) : (
+                  <span 
+                    onClick={() => startEditing("project-date", undefined, undefined, project.date)}
+                    className="text-xs font-semibold text-slate-800 cursor-pointer hover:text-indigo-600 transition"
+                  >
+                    {project.date}
+                  </span>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[10px] font-bold text-slate-400 tracking-wider uppercase">
+                  Version
+                </span>
+                {editingField.type === "project-version" ? (
+                  <input
+                    type="text"
+                    value={editValue}
+                    onChange={(e) => setEditValue(e.target.value)}
+                    onBlur={saveInlineEdit}
+                    onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
+                    autoFocus
+                    className="text-xs font-semibold text-slate-800 bg-white border border-indigo-200 px-1 py-0.5 rounded focus:outline-hidden w-20"
+                  />
+                ) : (
+                  <span 
+                    onClick={() => startEditing("project-version", undefined, undefined, project.version)}
+                    className="text-xs font-semibold text-slate-800 cursor-pointer hover:text-indigo-600 transition"
+                  >
+                    {project.version}
+                  </span>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[10px] font-bold text-slate-400 tracking-wider uppercase flex items-center gap-1">
+                  <DollarSign size={11} /> Currency Basis
+                </span>
+                <select
+                  value={project.currency}
+                  onChange={(e) => handleCurrencyChange(e.target.value)}
+                  className="bg-transparent text-xs font-semibold text-slate-800 focus:outline-hidden border-b border-dashed border-slate-300 hover:border-indigo-500 cursor-pointer pb-0.5 max-w-[80px]"
+                >
+                  {Object.keys(CURRENCY_SYMBOLS).map(c => (
+                    <option key={c} value={c}>{c} ({CURRENCY_SYMBOLS[c]})</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[10px] font-bold text-slate-400 tracking-wider uppercase flex items-center gap-1">
+                  <Clock size={11} /> TCO Duration
+                </span>
+                <div className="flex items-center gap-1 mt-0.5 print:hidden">
+                  <button
+                    onClick={() => {
+                      setTcoYears(2);
+                      showToast("Toggled TCO projection to 2 Years");
+                    }}
+                    className={`px-2 py-0.5 text-[10px] font-extrabold rounded transition-all cursor-pointer ${
+                      tcoYears === 2 
+                        ? "bg-indigo-600 text-white shadow-xs" 
+                        : "bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800"
+                    }`}
+                  >
+                    2-Yr
+                  </button>
+                  <button
+                    onClick={() => {
+                      setTcoYears(3);
+                      showToast("Toggled TCO projection to 3 Years");
+                    }}
+                    className={`px-2 py-0.5 text-[10px] font-extrabold rounded transition-all cursor-pointer ${
+                      tcoYears === 3 
+                        ? "bg-indigo-600 text-white shadow-xs" 
+                        : "bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800"
+                    }`}
+                  >
+                    3-Yr
+                  </button>
+                </div>
+                <span className="text-xs font-semibold text-slate-800 hidden print:inline">
+                  {tcoYears} Years TCO
+                </span>
+              </div>
+
+              <div className="flex flex-col gap-0.5">
+                <span className="text-[10px] font-bold text-slate-400 tracking-wider uppercase flex items-center gap-1">
+                  <RefreshCw size={11} className={transposeMatrix ? "rotate-180 duration-300" : "duration-300"} /> Matrix Layout
+                </span>
+                <div className="flex items-center gap-1 mt-0.5 print:hidden">
+                  <button
+                    onClick={() => {
+                      setTransposeMatrix(false);
+                      showToast("Set Standard Layout (Components as Rows)");
+                    }}
+                    className={`px-2 py-0.5 text-[10px] font-extrabold rounded transition-all cursor-pointer ${
+                      !transposeMatrix 
+                        ? "bg-indigo-600 text-white shadow-xs" 
+                        : "bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800"
+                    }`}
+                    title="Normal layout: rows are cost components, columns are vendors"
+                  >
+                    Standard
+                  </button>
+                  <button
+                    onClick={() => {
+                      setTransposeMatrix(true);
+                      showToast("Set Transposed Layout (Vendors as Rows)");
+                    }}
+                    className={`px-2 py-0.5 text-[10px] font-extrabold rounded transition-all cursor-pointer ${
+                      transposeMatrix 
+                        ? "bg-indigo-600 text-white shadow-xs" 
+                        : "bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800"
+                    }`}
+                    title="Transposed layout: rows are vendors, columns are cost components"
+                  >
+                    Transposed
+                  </button>
+                </div>
+                <span className="text-xs font-semibold text-slate-800 hidden print:inline">
+                  {transposeMatrix ? "Transposed" : "Standard"}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* BRUSH BENTO METRIC STATS & CHART VISUALS */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mt-2">
+            
+            {/* Stats Briefing Box (5 cols) */}
+            <div className="lg:col-span-5 flex flex-col gap-4">
+              
+              {/* Card 1: Cheapest option highlighted */}
+              <div className="bg-emerald-50/40 backdrop-blur-md border border-emerald-200/50 rounded-xl p-5 flex flex-col gap-2 shadow-xs h-full justify-between">
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-extrabold uppercase tracking-widest text-emerald-700">Financial Value Pick</span>
+                    <Award size={16} className="text-emerald-600" />
+                  </div>
+                  {briefing && briefing.cheapest.total > 0 ? (
+                    <div>
+                      <h4 className="text-2xl font-black text-slate-900 tracking-tight">
+                        {briefing.cheapest.name}
+                      </h4>
+                      <p className="text-xs text-emerald-800 font-medium mt-1">
+                        Grand Total {tcoYears}-Year TCO: <span className="font-extrabold text-slate-900 text-sm">{formatCurrency(briefing.cheapest.total)}</span>
+                      </p>
+                      <p className="text-xs text-slate-500 mt-2 italic leading-relaxed">
+                        {briefing.comparisonText}
+                      </p>
+                    </div>
+                  ) : (
+                    <div>
+                      <h4 className="text-sm font-semibold text-slate-600">No costs entered yet</h4>
+                      <p className="text-xs text-slate-400 mt-1">Populate components below to trigger dynamic comparison rankings.</p>
+                    </div>
+                  )}
+                </div>
+                <div className="text-[10px] text-slate-400 border-t border-slate-200/40 pt-4 mt-2 font-medium">
+                  Dynamic calculations based on years parameter selection.
+                </div>
+              </div>
+            </div>
+
+            {/* Custom Responsive SVG Stacked TCO Chart (7 cols) */}
+            <div className="lg:col-span-7 border border-white/40 rounded-2xl bg-white/35 backdrop-blur-md p-6 flex flex-col gap-4 relative justify-between print:hidden shadow-xs">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                    <BarChart size={16} className="text-indigo-600" /> TCO Financial Splittings
+                  </h4>
+                  <p className="text-[11px] text-slate-500">Visual comparison of total category contributions per vendor</p>
+                </div>
+                <span className="text-[10px] font-bold text-slate-400 uppercase">{tcoYears} Years Cumulative</span>
+              </div>
+
+              {/* SVG Core block */}
+              <div className="w-full relative h-[180px] mt-4 flex items-end justify-around border-b border-slate-200 pb-2">
+                {chartData.map((d) => {
+                  const barHeightRatio = Math.min((d.grandTotal / maxTotal) * 130, 130); // scale max to 130px height
+
+                  return (
+                    <div key={d.vendorId} className="flex flex-col items-center flex-1 max-w-[90px] group relative">
+                      
+                      {/* Interactive Float Tag */}
+                      <div className="absolute -top-10 opacity-0 group-hover:opacity-100 bg-slate-900 text-white text-[10px] py-1.5 px-2.5 rounded-lg shadow-lg z-20 pointer-events-none transition-all duration-200 transform -translate-y-1 block max-w-[150px] text-center">
+                        <span className="font-extrabold block border-b border-slate-700 pb-0.5 mb-1">{d.vendorName}</span>
+                        <div className="flex flex-col gap-0.5 text-[9px] text-left">
+                          {d.splits.map((s, idx) => (
+                            <span key={idx}>{s.categoryName}: {formatCurrency(s.value)}</span>
+                          ))}
+                          <span className="font-bold text-emerald-400 mt-0.5 border-t border-slate-700 pt-0.5">Total: {formatCurrency(d.grandTotal)}</span>
+                        </div>
+                      </div>
+
+                      {/* Stacked block columns */}
+                      <div className="w-8 flex flex-col-reverse items-center justify-start rounded-t-md overflow-hidden relative cursor-pointer" style={{ height: `${barHeightRatio}px` }}>
+                        {d.splits.map((s, splitIdx) => {
+                          const segmentHeight = d.grandTotal > 0 ? (s.value / d.grandTotal) * barHeightRatio : 0;
+                          if (segmentHeight <= 0) return null;
+                          return (
+                            <div 
+                              key={splitIdx} 
+                              className="w-full transition-all duration-150 hover:brightness-95 hover:scale-105" 
+                              style={{ 
+                                height: `${segmentHeight}px`,
+                                backgroundColor: s.color,
+                              }}
+                              title={`${s.categoryName}: ${formatCurrency(s.value)}`}
+                            />
+                          );
+                        })}
+                        {d.grandTotal === 0 && (
+                          <div className="absolute inset-0 border-2 border-dashed border-slate-200 text-slate-300 text-[10px] flex items-center justify-center font-bold">
+                            $0
+                          </div>
+                        )}
+                      </div>
+
+                      <span className="text-[10px] font-bold text-slate-700 mt-2 truncate w-full text-center">
+                        {d.vendorName}
+                      </span>
+                      <span className="text-[9px] text-slate-500 font-semibold font-mono">
+                        {formatCurrency(d.grandTotal)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Legends */}
+              <div className="flex flex-wrap gap-x-4 gap-y-2 justify-center text-[10px] font-bold text-slate-500 mt-2 border-t border-slate-100 pt-3">
+                {project.categories.slice(0, 5).map((cat, idx) => {
+                  const color = Object.values(CATEGORY_COLORS)[idx % Object.values(CATEGORY_COLORS).length] || CATEGORY_COLORS.default;
+                  return (
+                    <div key={cat.id} className="flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-xs block" style={{ backgroundColor: color }}></span>
+                      <span>{cat.name}</span>
+                    </div>
+                  );
+                })}
+              </div>
+
+            </div>
+
+          </div>
+        </section>
+
+        {/* CORE SECTION 1: COST SEGMENT COMPARISONS (MAPPED CATEGORIES) */}
+        <section className="flex flex-col gap-10">
+          <div className="flex items-center justify-between border-b border-slate-200 pb-3 flex-wrap gap-2">
+            <div className="flex items-center gap-3">
+              <h3 className="text-base font-bold text-slate-900 tracking-tight flex items-center gap-2">
+                <span className="bg-slate-100 text-slate-700 text-xs px-2.5 py-1 rounded-md font-extrabold shadow-2xs">Stage 1</span>
+                Component-Wise Pricing Matrices
+              </h3>
+              {/* Layout Quick-toggle */}
+              <button
+                onClick={() => {
+                  const newVal = !transposeMatrix;
+                  setTransposeMatrix(newVal);
+                  showToast(newVal ? "Set Transposed Layout (Vendors as Rows)" : "Set Standard Layout (Components as Rows)");
+                }}
+                className="hidden sm:flex items-center gap-1 text-[10px] font-bold text-slate-500 hover:text-indigo-600 bg-slate-100/80 hover:bg-indigo-50 px-2 py-1 rounded-md border border-slate-200/50 transition duration-150 cursor-pointer"
+                title="Switch layout: Transpose Rows and Columns"
+              >
+                <RefreshCw size={11} className={transposeMatrix ? "rotate-180 duration-300" : "duration-300"} />
+                Transpose Matrix ({transposeMatrix ? "Vendors as Rows" : "Components as Rows"})
+              </button>
+            </div>
+            <button
+              onClick={addNewCategory}
+              className="flex items-center gap-1.5 text-xs text-indigo-600 bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-lg font-bold border border-indigo-100 transition duration-150 cursor-pointer print:hidden"
+            >
+              <PlusCircle size={14} /> Add Category Table
+            </button>
+          </div>
+
+          <div className="flex flex-col gap-10">
+            {project.categories.map((cat, catIdx) => {
+              // Get category-specific values map
+              const remarks = project.comments?.[cat.id] || "";
+              
+              return (
+                <div 
+                  key={cat.id} 
+                  id={cat.id} 
+                  className={`bg-white/55 backdrop-blur-xl rounded-2xl border overflow-hidden shadow-xl hover:shadow-2xl transition duration-200 flex flex-col lg:flex-row relative group/card print:border-slate-300 print:shadow-none ${
+                    draggedCategoryIndex === catIdx ? "opacity-30 border-dashed border-indigo-400 bg-indigo-50/10 scale-98" : "border-white/60"
+                  }`}
+                  onDragOver={(e) => handleCategoryDragOver(e, catIdx)}
+                  onDrop={(e) => handleCategoryDrop(e, catIdx)}
+                >
+                  {/* Table area */}
+                  <div className="flex-1 p-6 md:p-8 flex flex-col gap-4">
+                    
+                    {/* Header */}
+                    <div className="flex items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                      <div className="flex items-center gap-2">
+                        {/* Drag Handle for Category reordering */}
+                        <div
+                          draggable
+                          onDragStart={(e) => handleCategoryDragStart(e, catIdx)}
+                          className="p-1 cursor-grab text-slate-300 hover:text-indigo-600 hover:bg-slate-50 rounded opacity-0 group-hover/card:opacity-100 transition duration-150 print:hidden flex items-center justify-center shrink-0"
+                          title="Drag to reorder Category tables"
+                        >
+                          <GripVertical size={16} />
+                        </div>
+
+                        <span 
+                          className="w-1.5 h-6 block rounded-full"
+                          style={{ backgroundColor: Object.values(CATEGORY_COLORS)[catIdx % Object.values(CATEGORY_COLORS).length] || CATEGORY_COLORS.default }}
+                        ></span>
+                        {editingField.type === "category-name" && editingField.id === cat.id ? (
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="text"
+                              value={editValue}
+                              onChange={(e) => setEditValue(e.target.value)}
+                              onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
+                              onBlur={saveInlineEdit}
+                              autoFocus
+                              className="text-lg font-bold text-slate-900 border-b border-indigo-500 focus:outline-hidden"
+                            />
+                          </div>
+                        ) : (
+                          <h4 
+                            onClick={() => startEditing("category-name", cat.id, undefined, cat.name)}
+                            className="text-lg font-bold text-slate-900 cursor-pointer hover:text-indigo-600 tracking-tight"
+                            title="Click to rename category"
+                          >
+                            {cat.name}
+                          </h4>
+                        )}
+                      </div>
+
+                      {/* Action tools */}
+                      <div className="flex items-center gap-2 print:hidden text-rose-500">
+                        <button
+                          onClick={() => deleteCategory(cat.id, cat.name)}
+                          className="p-1.5 px-2.5 text-rose-500 hover:bg-rose-50 border border-rose-100 rounded-lg text-xs font-semibold flex items-center gap-1 transition"
+                          title="Delete this entire category and component values"
+                        >
+                          <Trash2 size={13} /> Delete Category
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Responsive table block with clean in-place editing inputs */}
+                    <div className="overflow-x-auto w-full -mx-4 px-4 sm:mx-0 sm:px-0">
+                      <div className="inline-block min-w-full align-middle">
+                        {!transposeMatrix ? (
+                          <table className="min-w-full divide-y divide-slate-100">
+                            <thead>
+                              <tr className="bg-slate-50/70 rounded-lg print:bg-slate-50">
+                                <th scope="col" className="px-4 py-3.5 text-left text-xs font-bold text-slate-400 uppercase tracking-wider w-1/3">
+                                  Cost Component
+                                </th>
+                                
+                                {/* Vendor column names */}
+                                {project.vendors.map((vendor) => (
+                                  <th key={vendor.id} scope="col" className="px-4 py-3.5 text-right text-xs font-bold text-slate-400 uppercase tracking-widest relative group/vhead">
+                                    <div className="flex items-center justify-end gap-1 group">
+                                      {editingField.type === "vendor-name" && editingField.id === vendor.id ? (
+                                        <input
+                                          type="text"
+                                          value={editValue}
+                                          onChange={(e) => setEditValue(e.target.value)}
+                                          onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
+                                          onBlur={saveInlineEdit}
+                                          autoFocus
+                                          className="text-right font-extrabold text-slate-900 border-b border-indigo-500 text-xs py-0.5 focus:outline-hidden w-24 bg-white"
+                                        />
+                                      ) : (
+                                        <span
+                                          onClick={() => startEditing("vendor-name", vendor.id, undefined, vendor.name)}
+                                          className="cursor-pointer hover:text-indigo-600 select-all border-b border-transparent hover:border-slate-300 font-extrabold text-slate-900 mr-2"
+                                          title="Click to rename vendor column"
+                                        >
+                                          {vendor.name}
+                                        </span>
+                                      )}
+
+                                      {/* Inline Vendor Delete Button */}
+                                      <button 
+                                        onClick={() => deleteVendor(vendor.id, vendor.name)} 
+                                        className="text-slate-400 hover:text-rose-500 rounded p-1 transition print:hidden ml-1 shrink-0"
+                                        title={`Remove ${vendor.name} globally`}
+                                      >
+                                        <Trash2 size={11} />
+                                      </button>
+                                    </div>
+                                  </th>
+                                ))}
+                                
+                                <th scope="col" className="w-[40px] px-2 text-center text-xs font-bold text-slate-400 print:hidden"></th>
+                              </tr>
+                            </thead>
+
+                            <tbody className="divide-y divide-slate-150 bg-white">
+                              {cat.components.map((comp, compIdx) => (
+                                <tr 
+                                  key={comp.id} 
+                                  className={`group/row hover:bg-slate-50/50 transition ${
+                                    draggedComponentInfo?.catId === cat.id && draggedComponentInfo?.compIndex === compIdx 
+                                      ? "opacity-35 bg-indigo-50/30 border-l-2 border-indigo-500" 
+                                      : ""
+                                  }`}
+                                  onDragOver={(e) => handleComponentDragOver(e)}
+                                  onDrop={(e) => handleComponentDrop(e, cat.id, compIdx)}
+                                >
+                                  
+                                  {/* Component label */}
+                                  <td className="px-4 py-3 text-sm font-medium text-slate-800">
+                                    <div className="flex items-center gap-1.5 group/grip">
+                                      {/* Drag Handle for Component Row */}
+                                      <div
+                                        draggable
+                                        onDragStart={(e) => handleComponentDragStart(e, cat.id, compIdx)}
+                                        className="p-0.5 cursor-grab text-slate-300 hover:text-indigo-600 hover:bg-slate-50 rounded opacity-0 group-hover/row:opacity-100 transition duration-150 print:hidden shrink-0 flex items-center justify-center"
+                                        title="Drag to reorder component row"
+                                      >
+                                        <GripVertical size={13} />
+                                      </div>
+
+                                      {editingField.type === "component-name" && editingField.id === cat.id && editingField.subId === comp.id ? (
+                                        <input
+                                          type="text"
+                                          value={editValue}
+                                          onChange={(e) => setEditValue(e.target.value)}
+                                          onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
+                                          onBlur={saveInlineEdit}
+                                          autoFocus
+                                          className="text-xs font-bold text-slate-900 border-b border-indigo-500 bg-white focus:outline-hidden"
+                                        />
+                                      ) : (
+                                        <span 
+                                          onClick={() => startEditing("component-name", cat.id, comp.id, comp.name)}
+                                          className="cursor-pointer hover:text-indigo-600 hover:font-semibold"
+                                          title="Click to rename"
+                                        >
+                                          {comp.name}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </td>
+
+                                  {/* Input cell for each vendor column */}
+                                  {project.vendors.map((vendor) => {
+                                    const rawVal = project.costValues[cat.id]?.[comp.id]?.[vendor.id] ?? 0;
+                                    const factor = getComponentScaleFactor(comp.name, comp.id, tcoYears, cat.components);
+                                    const scaledVal = rawVal * factor;
+                                    
+                                    // Calculate average across all vendors for this specific component line item
+                                    const compPrices = project.vendors.map(v => (project.costValues[cat.id]?.[comp.id]?.[v.id] ?? 0) * factor);
+                                    const pricingSum = compPrices.reduce((a, b) => a + b, 0);
+                                    const compAvg = compPrices.length > 0 ? pricingSum / compPrices.length : 0;
+                                    
+                                    return (
+                                      <td key={vendor.id} className="px-4 py-3 text-right">
+                                        <div className="flex flex-col items-end justify-center">
+                                          <div className="flex items-center justify-end font-mono text-sm antialiased text-slate-800">
+                                            <span className="text-xs text-slate-400 font-semibold mr-0.5 select-none">
+                                              {CURRENCY_SYMBOLS[project.currency] || "$"}
+                                            </span>
+                                            <input
+                                              type="text"
+                                              defaultValue={rawVal === 0 ? "0" : rawVal.toString()}
+                                              key={`${project.id}-${cat.id}-${comp.id}-${vendor.id}-${rawVal}`} // Key forces re-render if reset triggered
+                                              onBlur={(e) => handleCellChange(cat.id, comp.id, vendor.id, e.target.value)}
+                                              onKeyDown={(e) => {
+                                                if (e.key === "Enter") {
+                                                  e.currentTarget.blur();
+                                                }
+                                              }}
+                                              className="text-right w-24 bg-transparent border-b border-transparent hover:border-slate-200 focus:border-indigo-500 focus:bg-indigo-50/20 focus:text-slate-900 rounded-sm font-bold antialiased py-0.5 px-1 focus:ring-1 focus:ring-indigo-150 focus:outline-hidden transition-all duration-150 select-all"
+                                            />
+                                          </div>
+
+                                          {/* Scaled TCO indicator for annual/recurring components */}
+                                          {factor !== 1 && (
+                                            <span className={`text-[10px] font-bold font-mono mt-0.5 select-none ${factor === 0 ? "text-slate-400 italic" : "text-indigo-600 bg-indigo-50/50 px-1 py-0.5 rounded-sm scale-95"}`}>
+                                              {factor === 0 ? `Excluded from ${tcoYears}-Yr TCO` : `TCO: ${formatCurrency(scaledVal)} (${factor}x)`}
+                                            </span>
+                                          )}
+
+                                          {/* Variance indicator relative to specific row average cost */}
+                                          {project.vendors.length > 1 && compAvg > 0 && (() => {
+                                            const diffPercent = ((scaledVal - compAvg) / compAvg) * 100;
+                                            if (Math.abs(diffPercent) < 0.1) {
+                                              return (
+                                                <span className="text-[9px] text-slate-400 font-mono mt-0.5 select-none opacity-50">
+                                                  average
+                                                </span>
+                                              );
+                                            }
+                                            const isHigher = diffPercent > 0;
+                                            return (
+                                              <span 
+                                                className={`text-[9px] font-mono mt-0.5 select-none flex items-center gap-0.5 ${
+                                                  isHigher ? "text-rose-500 font-medium" : "text-emerald-600 font-semibold"
+                                                }`}
+                                                title={`${isHigher ? "Higher" : "Lower"} than row average by ${Math.abs(diffPercent).toFixed(1)}%`}
+                                              >
+                                                {isHigher ? "▲" : "▼"} {Math.abs(diffPercent).toFixed(1)}%
+                                              </span>
+                                            );
+                                          })()}
+                                        </div>
+                                      </td>
+                                    );
+                                  })}
+
+                                  {/* Action column delete row */}
+                                  <td className="px-2 text-center text-slate-300 hover:text-rose-500 cursor-pointer transition print:hidden">
+                                    <button 
+                                      onClick={() => deleteCostComponent(cat.id, comp.id, comp.name)}
+                                      className="opacity-45 hover:opacity-100 group-hover/row:opacity-100 hover:scale-110 p-1 text-slate-400 hover:text-rose-500 rounded transition duration-150"
+                                      title="Delete this row"
+                                    >
+                                      <Trash2 size={13} />
+                                    </button>
+                                  </td>
+                                </tr>
+                              ))}
+
+                              {/* Section Category SUM Total row */}
+                              <tr className="bg-slate-50/40 font-bold border-t border-slate-200">
+                                <td className="px-4 py-3 text-xs font-extrabold uppercase text-slate-500 tracking-wider">
+                                  Total ({cat.name})
+                                </td>
+
+                                {project.vendors.map((vendor) => {
+                                  const catTotal = getCategoryTotalForVendor(cat.id, vendor.id);
+                                  
+                                  // Calculate average category totals across all vendors
+                                  const totalsList = project.vendors.map(v => getCategoryTotalForVendor(cat.id, v.id));
+                                  const totalSum = totalsList.reduce((a, b) => a + b, 0);
+                                  const totalAvg = totalsList.length > 0 ? totalSum / totalsList.length : 0;
+                                  
+                                  return (
+                                    <td key={vendor.id} className="px-4 py-3 text-right font-mono text-sm font-black text-slate-900 border-b-2 border-double border-slate-300">
+                                      <div className="flex flex-col items-end justify-center">
+                                        <span>{formatCurrency(catTotal)}</span>
+                                        {project.vendors.length > 1 && totalAvg > 0 && (() => {
+                                          const diffPercent = ((catTotal - totalAvg) / totalAvg) * 100;
+                                          if (Math.abs(diffPercent) < 0.1) {
+                                            return (
+                                              <span className="text-[9px] text-slate-400 font-mono select-none font-normal leading-none mt-0.5 opacity-50">
+                                                average
+                                              </span>
+                                            );
+                                          }
+                                          const isHigher = diffPercent > 0;
+                                          return (
+                                            <span 
+                                              className={`text-[9px] font-mono select-none leading-none mt-1 flex items-center gap-0.5 ${
+                                                isHigher ? "text-rose-500 font-bold" : "text-emerald-600 font-black"
+                                              }`}
+                                              title={`${isHigher ? "Higher" : "Lower"} than category sum average by ${Math.abs(diffPercent).toFixed(1)}%`}
+                                            >
+                                              {isHigher ? "▲" : "▼"} {Math.abs(diffPercent).toFixed(1)}%
+                                            </span>
+                                          );
+                                        })()}
+                                      </div>
+                                    </td>
+                                  );
+                                })}
+                                <td className="print:hidden"></td>
+                              </tr>
+
+                              {/* Vendor specific attachments row */}
+                              <tr className="bg-slate-50/20 text-xs border-t border-slate-100 print:hidden font-medium">
+                                <td className="px-4 py-3 font-semibold text-slate-500 uppercase tracking-wider text-[10px] select-none">
+                                  <div className="flex items-center gap-1.5 text-slate-500">
+                                    <Paperclip size={12} className="text-indigo-500" />
+                                    Linked Attachments
+                                  </div>
+                                </td>
+                                {project.vendors.map((vendor) => {
+                                  const vendorFiles = getFilesForVendor(vendor.id);
+                                  return (
+                                    <td key={vendor.id} className="px-4 py-3 text-right">
+                                      <div className="flex flex-col items-end gap-1.5 justify-start">
+                                        {vendorFiles.length > 0 ? (
+                                          <div className="flex flex-col gap-1 w-full max-w-[200px] text-[10px]">
+                                            {vendorFiles.map((file) => (
+                                              <div 
+                                                key={file.id} 
+                                                className="flex items-center justify-between border border-indigo-100/60 bg-white hover:bg-indigo-50/30 rounded-md px-1.5 py-0.5 font-medium transition duration-150 gap-1.5 shadow-2xs"
+                                                title={file.name}
+                                              >
+                                                <span className="truncate flex-1 select-none font-mono text-[9px] text-slate-705 text-left">
+                                                  {file.name}
+                                                </span>
+                                                <div className="flex items-center gap-0.5 shrink-0">
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => setActiveViewFile(file)}
+                                                    className="p-0.5 hover:bg-indigo-50 hover:text-indigo-600 text-indigo-500 rounded cursor-pointer"
+                                                    title="Quick View"
+                                                  >
+                                                    <Eye size={10} />
+                                                  </button>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => downloadFile(file)}
+                                                    className="p-0.5 hover:bg-slate-100 text-slate-500 rounded cursor-pointer"
+                                                    title="Download"
+                                                  >
+                                                    <Download size={10} />
+                                                  </button>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => deleteUploadedFile(file.id)}
+                                                    className="p-0.5 hover:bg-rose-50 hover:text-rose-600 text-slate-400 rounded cursor-pointer"
+                                                    title="Remove Link"
+                                                  >
+                                                    <X size={10} />
+                                                  </button>
+                                                </div>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        ) : (
+                                          <span className="text-[10px] text-slate-400 italic mb-0.5 select-none font-normal">No files active</span>
+                                        )}
+
+                                        {/* Upload attachment button */}
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            const input = document.createElement("input");
+                                            input.type = "file";
+                                            input.multiple = true;
+                                            input.onchange = (ev) => handleVendorFileUpload(vendor.id, ev as any);
+                                            input.click();
+                                          }}
+                                          className="inline-flex items-center gap-1 font-bold text-[9px] text-indigo-650 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border border-indigo-150 rounded px-1.5 py-0.5 transition cursor-pointer"
+                                        >
+                                          <Plus size={10} className="stroke-[2.5]" /> Attach File
+                                        </button>
+                                      </div>
+                                    </td>
+                                  );
+                                })}
+                                <td className="print:hidden"></td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        ) : (
+                          <table className="min-w-full divide-y divide-slate-100">
+                            <thead>
+                              <tr className="bg-slate-50/70 rounded-lg print:bg-slate-50">
+                                <th scope="col" className="px-4 py-3.5 text-left text-xs font-bold text-slate-400 uppercase tracking-wider w-1/4">
+                                  Vendor ID / Name
+                                </th>
+                                {cat.components.map((comp, compIdx) => (
+                                  <th 
+                                    key={comp.id} 
+                                    scope="col" 
+                                    className={`px-4 py-3.5 text-right text-xs font-bold text-slate-400 uppercase tracking-widest relative group/vhead transition ${
+                                      draggedComponentInfo?.catId === cat.id && draggedComponentInfo?.compIndex === compIdx 
+                                        ? "opacity-35 bg-indigo-50/30 ring-1 ring-indigo-450" 
+                                        : ""
+                                    }`}
+                                    onDragOver={(e) => handleComponentDragOver(e)}
+                                    onDrop={(e) => handleComponentDrop(e, cat.id, compIdx)}
+                                  >
+                                    <div className="flex items-center justify-end gap-1 group">
+                                      {/* Drag Handle for Component Column */}
+                                      <div
+                                        draggable
+                                        onDragStart={(e) => handleComponentDragStart(e, cat.id, compIdx)}
+                                        className="p-0.5 cursor-grab text-slate-300 hover:text-indigo-600 hover:bg-slate-50/50 rounded opacity-0 group-hover/vhead:opacity-100 transition duration-150 print:hidden shrink-0 flex items-center justify-center"
+                                        title="Drag to reorder component column"
+                                      >
+                                        <GripVertical size={12} />
+                                      </div>
+
+                                      {editingField.type === "component-name" && editingField.id === cat.id && editingField.subId === comp.id ? (
+                                        <input
+                                          type="text"
+                                          value={editValue}
+                                          onChange={(e) => setEditValue(e.target.value)}
+                                          onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
+                                          onBlur={saveInlineEdit}
+                                          autoFocus
+                                          className="text-right font-extrabold text-slate-900 border-b border-indigo-500 text-xs py-0.5 focus:outline-hidden w-24 bg-white"
+                                        />
+                                      ) : (
+                                        <span
+                                          onClick={() => startEditing("component-name", cat.id, comp.id, comp.name)}
+                                          className="cursor-pointer hover:text-indigo-600 select-all border-b border-transparent hover:border-slate-300 font-extrabold text-slate-900 mr-2"
+                                          title="Click to rename component column"
+                                        >
+                                          {comp.name}
+                                        </span>
+                                      )}
+
+                                      {/* Inline Component Delete Button */}
+                                      <button 
+                                        onClick={() => deleteCostComponent(cat.id, comp.id, comp.name)} 
+                                        className="text-slate-400 hover:text-rose-500 rounded p-1 transition print:hidden ml-1 shrink-0"
+                                        title={`Remove ${comp.name} from category`}
+                                      >
+                                        <Trash2 size={11} />
+                                      </button>
+                                    </div>
+                                  </th>
+                                ))}
+                                <th scope="col" className="px-4 py-3.5 text-right text-xs font-bold text-slate-400 uppercase tracking-widest">
+                                  Total ({cat.name})
+                                </th>
+                                <th scope="col" className="w-[40px] px-2 text-center text-xs font-bold text-slate-400 print:hidden"></th>
+                              </tr>
+                            </thead>
+
+                            <tbody className="divide-y divide-slate-150 bg-white">
+                              {project.vendors.map((vendor) => {
+                                const catTotal = getCategoryTotalForVendor(cat.id, vendor.id);
+
+                                // Calculated values or averages for the last row totals
+                                const totalsList = project.vendors.map(v => getCategoryTotalForVendor(cat.id, v.id));
+                                const totalSum = totalsList.reduce((a, b) => a + b, 0);
+                                const totalAvg = totalsList.length > 0 ? totalSum / totalsList.length : 0;
+
+                                return (
+                                  <tr key={vendor.id} className="group/row hover:bg-slate-50/50 transition">
+                                    {/* Vendor label */}
+                                    <td className="px-4 py-3 text-sm font-medium text-slate-800">
+                                      {editingField.type === "vendor-name" && editingField.id === vendor.id ? (
+                                        <input
+                                          type="text"
+                                          value={editValue}
+                                          onChange={(e) => setEditValue(e.target.value)}
+                                          onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
+                                          onBlur={saveInlineEdit}
+                                          autoFocus
+                                          className="text-xs font-bold text-slate-900 border-b border-indigo-500 bg-white focus:outline-hidden"
+                                        />
+                                      ) : (
+                                        <div className="flex flex-col gap-1.5">
+                                          <span 
+                                            onClick={() => startEditing("vendor-name", vendor.id, undefined, vendor.name)}
+                                            className="cursor-pointer hover:text-indigo-600 hover:font-semibold text-xs font-bold text-slate-900"
+                                            title="Click to rename vendor"
+                                          >
+                                            {vendor.name}
+                                          </span>
+
+                                          {/* Transposed row attachments block */}
+                                          <div className="flex flex-col gap-1 mt-1 print:hidden select-text">
+                                            {(() => {
+                                              const vendorFiles = getFilesForVendor(vendor.id);
+                                              return (
+                                                <>
+                                                  {vendorFiles.length > 0 && (
+                                                    <div className="flex flex-col gap-1 max-w-[170px]">
+                                                      {vendorFiles.map((file) => (
+                                                        <div 
+                                                          key={file.id} 
+                                                          className="flex items-center justify-between border border-indigo-100/60 bg-white hover:bg-indigo-50/20 rounded px-1.5 py-0.5 text-[9px] font-medium transition"
+                                                          title={file.name}
+                                                        >
+                                                          <span className="truncate flex-1 select-none font-mono text-[8.5px] text-slate-600 text-left">
+                                                            {file.name}
+                                                          </span>
+                                                          <div className="flex items-center gap-0.5 shrink-0 ml-1">
+                                                            <button
+                                                              type="button"
+                                                              onClick={(ev) => { ev.stopPropagation(); setActiveViewFile(file); }}
+                                                              className="p-0.5 text-indigo-500 hover:text-indigo-700 hover:bg-slate-100 rounded cursor-pointer"
+                                                              title="View"
+                                                            >
+                                                              <Eye size={9} />
+                                                            </button>
+                                                            <button
+                                                              type="button"
+                                                              onClick={(ev) => { ev.stopPropagation(); downloadFile(file); }}
+                                                              className="p-0.5 text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded cursor-pointer"
+                                                              title="Download"
+                                                            >
+                                                              <Download size={9} />
+                                                            </button>
+                                                            <button
+                                                              type="button"
+                                                              onClick={(ev) => { ev.stopPropagation(); deleteUploadedFile(file.id); }}
+                                                              className="p-0.5 text-slate-400 hover:text-rose-600 hover:bg-slate-100 rounded cursor-pointer"
+                                                              title="Remove link"
+                                                            >
+                                                              <X size={9} />
+                                                            </button>
+                                                          </div>
+                                                        </div>
+                                                      ))}
+                                                    </div>
+                                                  )}
+
+                                                  <button
+                                                    type="button"
+                                                    onClick={(ev) => {
+                                                      ev.stopPropagation();
+                                                      const input = document.createElement("input");
+                                                      input.type = "file";
+                                                      input.multiple = true;
+                                                      input.onchange = (ev2) => handleVendorFileUpload(vendor.id, ev2 as any);
+                                                      input.click();
+                                                    }}
+                                                    className="inline-flex items-center gap-1 font-bold text-[8.5px] text-indigo-650 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border border-indigo-150 rounded px-1 py-0.5 transition w-fit cursor-pointer"
+                                                  >
+                                                    <Plus size={9} className="stroke-[2.5]" /> Attach File
+                                                  </button>
+                                                </>
+                                              );
+                                            })()}
+                                          </div>
+                                        </div>
+                                      )}
+                                    </td>
+
+                                    {/* Component value cells */}
+                                    {cat.components.map((comp) => {
+                                      const rawVal = project.costValues[cat.id]?.[comp.id]?.[vendor.id] ?? 0;
+                                      const factor = getComponentScaleFactor(comp.name, comp.id, tcoYears, cat.components);
+                                      const scaledVal = rawVal * factor;
+
+                                      // Calculate average for this component column across all vendors
+                                      const compPrices = project.vendors.map(v => (project.costValues[cat.id]?.[comp.id]?.[v.id] ?? 0) * factor);
+                                      const pricingSum = compPrices.reduce((a, b) => a + b, 0);
+                                      const compAvg = compPrices.length > 0 ? pricingSum / compPrices.length : 0;
+
+                                      return (
+                                        <td key={comp.id} className="px-4 py-3 text-right">
+                                          <div className="flex flex-col items-end justify-center">
+                                            <div className="flex items-center justify-end font-mono text-sm antialiased text-slate-800">
+                                              <span className="text-xs text-slate-400 font-semibold mr-0.5 select-none font-sans">
+                                                {CURRENCY_SYMBOLS[project.currency] || "$"}
+                                              </span>
+                                              <input
+                                                type="text"
+                                                defaultValue={rawVal === 0 ? "0" : rawVal.toString()}
+                                                key={`${project.id}-${cat.id}-${comp.id}-${vendor.id}-${rawVal}`}
+                                                onBlur={(e) => handleCellChange(cat.id, comp.id, vendor.id, e.target.value)}
+                                                onKeyDown={(e) => {
+                                                  if (e.key === "Enter") {
+                                                    e.currentTarget.blur();
+                                                  }
+                                                }}
+                                                className="text-right w-24 bg-transparent border-b border-transparent hover:border-slate-200 focus:border-indigo-500 focus:bg-indigo-50/20 focus:text-slate-900 rounded-sm font-bold antialiased py-0.5 px-1 focus:ring-1 focus:ring-indigo-150 focus:outline-hidden transition-all duration-150 select-all"
+                                              />
+                                            </div>
+
+                                            {/* Scaled TCO indicator for annual/recurring components */}
+                                            {factor !== 1 && (
+                                              <span className={`text-[10px] font-bold font-mono mt-0.5 select-none ${factor === 0 ? "text-slate-400 italic" : "text-indigo-600 bg-indigo-50/50 px-1 py-0.5 rounded-sm scale-95"}`}>
+                                                {factor === 0 ? `Excluded` : `TCO: ${formatCurrency(scaledVal)}`}
+                                              </span>
+                                            )}
+
+                                            {/* Variance indicator relative to column average */}
+                                            {project.vendors.length > 1 && compAvg > 0 && (() => {
+                                              const diffPercent = ((scaledVal - compAvg) / compAvg) * 100;
+                                              if (Math.abs(diffPercent) < 0.1) {
+                                                return (
+                                                  <span className="text-[9px] text-slate-400 font-mono mt-0.5 select-none opacity-50">
+                                                    average
+                                                  </span>
+                                                );
+                                              }
+                                              const isHigher = diffPercent > 0;
+                                              return (
+                                                <span 
+                                                  className={`text-[9px] font-mono mt-0.5 select-none flex items-center gap-0.5 ${
+                                                    isHigher ? "text-rose-500 font-medium" : "text-emerald-600 font-semibold"
+                                                  }`}
+                                                  title={`${isHigher ? "Higher" : "Lower"} than component average by ${Math.abs(diffPercent).toFixed(1)}%`}
+                                                >
+                                                  {isHigher ? "▲" : "▼"} {Math.abs(diffPercent).toFixed(1)}%
+                                                </span>
+                                              );
+                                            })()}
+                                          </div>
+                                        </td>
+                                      );
+                                    })}
+
+                                    {/* Row Total */}
+                                    <td className="px-4 py-3 text-right font-mono text-sm font-black text-slate-900">
+                                      <div className="flex flex-col items-end justify-center">
+                                        <span>{formatCurrency(catTotal)}</span>
+                                        {project.vendors.length > 1 && totalAvg > 0 && (() => {
+                                          const diffPercent = ((catTotal - totalAvg) / totalAvg) * 100;
+                                          if (Math.abs(diffPercent) < 0.1) {
+                                            return (
+                                              <span className="text-[9px] text-slate-400 font-mono select-none font-normal leading-none mt-0.5 opacity-50">
+                                                average
+                                              </span>
+                                            );
+                                          }
+                                          const isHigher = diffPercent > 0;
+                                          return (
+                                            <span 
+                                              className={`text-[9px] font-mono select-none leading-none mt-1 flex items-center gap-0.5 ${
+                                                isHigher ? "text-rose-500 font-bold" : "text-emerald-600 font-black"
+                                              }`}
+                                              title={`${isHigher ? "Higher" : "Lower"} than category sum average by ${Math.abs(diffPercent).toFixed(1)}%`}
+                                            >
+                                              {isHigher ? "▲" : "▼"} {Math.abs(diffPercent).toFixed(1)}%
+                                            </span>
+                                          );
+                                        })()}
+                                      </div>
+                                    </td>
+
+                                    {/* Action column to delete vendor */}
+                                    <td className="px-2 text-center text-slate-300 hover:text-rose-500 cursor-pointer transition print:hidden">
+                                      <button 
+                                        onClick={() => deleteVendor(vendor.id, vendor.name)}
+                                        className="opacity-45 hover:opacity-100 group-hover/row:opacity-100 hover:scale-110 p-1 text-slate-400 hover:text-rose-500 rounded transition duration-150"
+                                        title={`Remove ${vendor.name} globally`}
+                                      >
+                                        <Trash2 size={13} />
+                                      </button>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+
+                              {/* bottom Row: Averages or component sums */}
+                              <tr className="bg-slate-50/40 font-bold border-t border-slate-200">
+                                <td className="px-4 py-3 text-xs font-extrabold uppercase text-slate-500 tracking-wider">
+                                  Component Avg
+                                </td>
+                                {cat.components.map((comp) => {
+                                  const compPrices = project.vendors.map(v => {
+                                    const raw = project.costValues[cat.id]?.[comp.id]?.[v.id] ?? 0;
+                                    const factor = getComponentScaleFactor(comp.name, comp.id, tcoYears, cat.components);
+                                    return raw * factor;
+                                  });
+                                  const averagePrice = compPrices.length > 0 ? compPrices.reduce((a, b) => a + b, 0) / compPrices.length : 0;
+                                  return (
+                                    <td key={comp.id} className="px-4 py-3 text-right font-mono text-xs text-slate-600 font-bold border-b-2 border-double border-slate-300">
+                                      {formatCurrency(averagePrice)}
+                                    </td>
+                                  );
+                                })}
+                                {/* Empty total cell for the average row */}
+                                <td className="border-b-2 border-double border-slate-300"></td>
+                                <td className="print:hidden border-b-2 border-double border-slate-300"></td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Quick helper controls at table footer context */}
+                    <div className="flex items-center gap-4 mt-1 border-t border-slate-100 pt-4 print:hidden">
+                      <button
+                        onClick={() => addCostComponent(cat.id)}
+                        className="text-xs font-bold text-indigo-600 hover:text-indigo-800 hover:bg-slate-50 border border-transparent rounded-lg px-3 py-1.5 flex items-center gap-1 cursor-pointer transition"
+                      >
+                        <Plus size={14} className="stroke-[2.5]" /> Add Component Cost Row
+                      </button>
+
+                      <button
+                        onClick={addNewVendor}
+                        className="text-xs font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-50 border border-transparent rounded-lg px-3 py-1.5 flex items-center gap-1 cursor-pointer transition"
+                      >
+                        <Plus size={14} /> Add Vendor Column
+                      </button>
+                    </div>
+
+                  </div>
+
+                  {/* Comments Side-car section */}
+                  <div className="w-full lg:w-80 bg-white/20 backdrop-blur-md border-t lg:border-t-0 lg:border-l border-white/30 p-6 flex flex-col gap-3 justify-start shrink-0 print:border-l-0 print:bg-white print:p-0 print:mt-1">
+                    <div className="flex items-center gap-1.5">
+                      <FileText size={15} className="text-slate-400" />
+                      <span className="text-[11px] font-extrabold uppercase tracking-widest text-slate-400">Analysis & Evaluation Remarks</span>
+                    </div>
+                    <textarea
+                      placeholder={`Document qualitative findings, capacity limits, or trade-offs for ${cat.name} cost components here...`}
+                      value={remarks}
+                      onChange={(e) => handleCategoryCommentChange(cat.id, e.target.value)}
+                      rows={5}
+                      className="w-full text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-xl p-3 focus:outline-hidden focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 resize-y leading-relaxed shadow-3xs hover:border-slate-300 transition shrink-0 print:border-0 print:p-0 print:shadow-none print:mt-1 text-justify"
+                    />
+                  </div>
+
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+
+
+        {/* CORE SECTION 3: GRAND TOTALS 2-YEAR TCO (OCR ACCORDANCE) */}
+        <section className="bg-[#f0f9fa] backdrop-blur-xl text-slate-800 rounded-2xl border border-[#c0e6ee] shadow-2xl overflow-hidden print:bg-white print:text-slate-900 print:border-slate-300 print:shadow-none print:rounded-none">
+          
+          {/* Header block */}
+          <div className="bg-[#e0f1f4]/60 backdrop-blur-md p-6 md:px-8 py-5 border-b border-[#c0e6ee]/65 flex flex-col sm:flex-row sm:items-center justify-between gap-4 print:bg-transparent print:border-slate-200">
+            <div>
+              <span className="text-[11px] font-extrabold uppercase tracking-widest text-[#0e7490]">Section 3 Summaries</span>
+              <h3 className="text-base font-bold text-slate-950 tracking-tight flex items-center gap-2 mt-0.5 print:text-slate-900">
+                Grand Total — {tcoYears} Year TCO
+              </h3>
+              <p className="text-xs text-slate-650 mt-1 print:text-slate-500">Consolidated financial overview of all cost categories across evaluated options.</p>
+            </div>
+            
+            <span className="text-[10px] font-bold tracking-widest text-[#0c4a6e] uppercase bg-[#e0f2fe] border border-[#bae6fd]/50 px-3 py-1.5 rounded-md print:hidden">
+              Consolidated Report
+            </span>
+          </div>
+
+          <div className="p-6 md:p-8">
+            <div className="overflow-x-auto w-full -mx-4 px-4 sm:mx-0 sm:px-0">
+              <table className="min-w-full divide-y divide-[#c0e6ee] print:divide-slate-200">
+                <thead>
+                  <tr>
+                    <th scope="col" className="px-4 py-3.5 text-left text-xs font-bold text-slate-500 uppercase tracking-wider w-1/3">
+                      Category
+                    </th>
+                    {project.vendors.map((v) => (
+                      <th key={v.id} scope="col" className="px-4 py-3.5 text-right text-xs font-bold text-slate-700 uppercase tracking-wider print:text-slate-700">
+                        {v.name}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+
+                <tbody className="divide-y divide-[#c0e6ee]/75 bg-[#fcfefef0] print:divide-slate-200 print:bg-white">
+                  
+                  {project.categories.map((cat) => (
+                    <tr key={cat.id} className="hover:bg-[#e0f2f5]/30 transition print:hover:bg-transparent">
+                      <td className="px-4 py-3.5 text-sm font-semibold text-slate-700 print:text-slate-800">
+                        {cat.name}
+                      </td>
+                      
+                      {project.vendors.map((v) => {
+                        const total = getCategoryTotalForVendor(cat.id, v.id);
+                        
+                        // Calculate category sum average across all vendors
+                        const catTotals = project.vendors.map(vendor => getCategoryTotalForVendor(cat.id, vendor.id));
+                        const sumTotals = catTotals.reduce((a, b) => a + b, 0);
+                        const avgTotal = catTotals.length > 0 ? sumTotals / catTotals.length : 0;
+                        
+                        return (
+                           <td key={v.id} className="px-4 py-3.5 text-right font-mono text-sm antialiased text-slate-800 print:text-slate-700">
+                            <div className="flex flex-col items-end justify-center">
+                              {total === 0 ? (
+                                <span className="text-slate-450 select-none print:text-slate-450">—</span>
+                              ) : (
+                                <span className="font-semibold text-slate-900">{formatCurrency(total)}</span>
+                              )}
+                              
+                              {project.vendors.length > 1 && avgTotal > 0 && total > 0 && (() => {
+                                const diffPercent = ((total - avgTotal) / avgTotal) * 100;
+                                if (Math.abs(diffPercent) < 0.1) {
+                                  return (
+                                    <span className="text-[9px] text-slate-400 font-mono mt-0.5 select-none opacity-60 print:text-slate-450">
+                                      average
+                                    </span>
+                                  );
+                                }
+                                const isHigher = diffPercent > 0;
+                                return (
+                                  <span 
+                                    className={`text-[9px] font-mono mt-0.5 select-none flex items-center gap-0.5 ${
+                                      isHigher ? "text-rose-600 print:text-rose-600 font-semibold" : "text-emerald-650 print:text-emerald-700 font-bold"
+                                    }`}
+                                    title={`${isHigher ? "Higher" : "Lower"} than row average by ${Math.abs(diffPercent).toFixed(1)}%`}
+                                  >
+                                    {isHigher ? "▲" : "▼"} {Math.abs(diffPercent).toFixed(1)}%
+                                  </span>
+                                );
+                              })()}
+                            </div>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+
+                  {/* Summary attachments info row inside Section 3 */}
+                  <tr className="bg-[#f0f9fa]/40 border-t border-[#c0e6ee]/40 print:hidden text-xs">
+                    <td className="px-4 py-3 font-semibold text-slate-500 uppercase text-[10px] select-none">
+                      <div className="flex items-center gap-1.5 text-slate-500">
+                        <Paperclip size={12} className="text-cyan-600" />
+                        Dossier Files
+                      </div>
+                    </td>
+                    {project.vendors.map((vendor) => {
+                      const vendorFiles = getFilesForVendor(vendor.id);
+                      return (
+                        <td key={vendor.id} className="px-4 py-3 text-right">
+                          <div className="flex flex-col items-end gap-1 text-[10px]">
+                            {vendorFiles.length > 0 ? (
+                              <div className="flex flex-col items-end gap-0.5 font-medium max-w-[190px]">
+                                {vendorFiles.map((f) => (
+                                  <div 
+                                    key={f.id} 
+                                    className="text-[9px] text-cyan-850 hover:text-cyan-950 truncate max-w-full font-mono cursor-pointer flex items-center gap-1"
+                                    onClick={() => setActiveViewFile(f)}
+                                    title="Click to view"
+                                  >
+                                    <span className="underline">{f.name}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-[10px] text-slate-400 italic">None attached</span>
+                            )}
+                          </div>
+                        </td>
+                      );
+                    })}
+                  </tr>
+
+                  {/* GRAND TOTAL BLOCK */}
+                  <tr className="bg-[#e4f3f6] font-bold border-t-2 border-[#b0dfeb] print:bg-slate-50 print:border-slate-300">
+                    <td className="px-4 py-4 text-xs font-extrabold uppercase text-[#0f766e] tracking-wider print:text-[#0f766e]">
+                      GRAND TOTAL
+                    </td>
+                    
+                    {project.vendors.map((v) => {
+                      const grandTotalVal = getVendorGrandTotal(v.id);
+                      const isCheapest = briefing && briefing.cheapest.id === v.id && grandTotalVal > 0;
+                      
+                      // Calculate average grand total across all vendors
+                      const grandTotalsList = project.vendors.map(vendor => getVendorGrandTotal(vendor.id));
+                      const grandTotalsSum = grandTotalsList.reduce((a, b) => a + b, 0);
+                      const grandAvg = grandTotalsList.length > 0 ? grandTotalsSum / grandTotalsList.length : 0;
+                      
+                      const diffPercent = grandAvg > 0 ? ((grandTotalVal - grandAvg) / grandAvg) * 100 : 0;
+                      
+                      return (
+                        <td key={v.id} className="px-4 py-4 text-right">
+                          <div className="flex flex-col items-end">
+                            <span className={`font-mono text-base font-black antialiased ${isCheapest ? "text-emerald-700 print:text-emerald-800" : "text-slate-800 print:text-slate-900"}`}>
+                              {formatCurrency(grandTotalVal)}
+                            </span>
+                            
+                            {project.vendors.length > 1 && grandAvg > 0 && grandTotalVal > 0 && (() => {
+                              if (Math.abs(diffPercent) < 0.1) {
+                                return (
+                                  <span className="text-[9px] text-slate-400 font-mono mt-0.5 select-none opacity-60 print:text-slate-400">
+                                    average
+                                  </span>
+                                );
+                              }
+                              const isHigher = diffPercent > 0;
+                              return (
+                                <span 
+                                  className={`text-[9px] font-mono mt-1 select-none flex items-center gap-0.5 ${
+                                    isHigher ? "text-rose-650 print:text-rose-650" : "text-emerald-650 print:text-emerald-700 font-bold"
+                                  }`}
+                                  title={`${isHigher ? "Higher" : "Lower"} than grand average by ${Math.abs(diffPercent).toFixed(1)}%`}
+                                >
+                                  {isHigher ? "▲" : "▼"} {Math.abs(diffPercent).toFixed(1)}%
+                                </span>
+                              );
+                            })()}
+                            
+                            {isCheapest && (
+                              <span className="text-[9px] text-emerald-800 font-extrabold bg-[#def7ec] border border-[#bdecda] px-1 py-0.5 rounded uppercase tracking-wider block mt-1.5 shadow-2xs print:bg-emerald-100 print:text-emerald-700">
+                                Best Price
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                      );
+                    })}
+                  </tr>
+
+                </tbody>
+              </table>
+            </div>
+
+            {/* General executive notes comment box below the TCO table */}
+            <div className="mt-8 border-t border-[#c0e6ee]/40 pt-6 flex flex-col gap-3 print:border-slate-200">
+              <h4 className="text-xs font-bold tracking-widest text-[#0e7490] uppercase flex items-center gap-1.5 print:text-slate-500">
+                <FileText size={14} /> Strategic Procurement Recommendation Notes
+              </h4>
+              <textarea
+                value={project.generalNotes}
+                onChange={(e) => handleGeneralNotesChange(e.target.value)}
+                placeholder="Write recommendations, next actions, pricing caveats, or corporate summaries here..."
+                rows={4}
+                className="w-full text-xs text-slate-800 bg-white border border-[#bfe2ea] shadow-xs rounded-xl p-4 focus:outline-hidden focus:ring-1 focus:ring-cyan-500 focus:border-cyan-550 resize-none leading-relaxed print:bg-transparent print:border-0 print:p-0 print:shadow-none print:text-slate-700 print:mt-1 text-justify"
+              />
+            </div>
+
+          </div>
+        </section>
+
+        {/* Quotes & General File Attachment Vault at bottom */}
+        <section className="bg-[#f0f7ff]/75 backdrop-blur-xl rounded-2xl border border-blue-200/40 p-6 md:p-8 shadow-xl flex flex-col gap-6 print:hidden mt-8">
+          <div>
+            <span className="text-[11px] font-extrabold uppercase tracking-widest text-[#1d4ed8]">Document Dossier</span>
+            <h3 className="text-base font-bold text-slate-900 tracking-tight flex items-center gap-2 mt-0.5">
+              <UploadCloud size={16} className="text-blue-500" /> Quotes & General Attachments Vault
+            </h3>
+            <p className="text-xs text-slate-500 mt-1">Unified repository for raw PDF quotes, official sheets, supplier proposals, and signed agreements linked across vendor options.</p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+            {/* Drag and drop zone */}
+            <div 
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                handleFileUpload(e);
+              }}
+              onClick={() => fileVaultRef.current?.click()}
+              className="border-2 border-dashed border-blue-250 hover:border-blue-450 rounded-xl p-6 flex flex-col items-center justify-center gap-2.5 text-center cursor-pointer bg-white hover:bg-blue-50/20 transition duration-150 shadow-2xs group min-h-[160px]"
+            >
+              <UploadCloud size={28} className="text-blue-500 group-hover:scale-110 transition duration-150" />
+              <span className="text-xs font-bold text-slate-800 tracking-tight">Drag Proposals here or Click to Add</span>
+              <span className="text-[10px] text-slate-400 leading-normal max-w-xs">Upload general contract files or vendor RFPs. Linked documents are synchronized in Firebase system (Max 1MB per file).</span>
+            </div>
+            
+            <input 
+              type="file" 
+              ref={fileVaultRef} 
+              onChange={handleFileUpload}
+              multiple
+              className="hidden" 
+            />
+
+            {/* Uploaded Files list */}
+            <div className="flex flex-col gap-2 bg-white/40 border border-slate-100 rounded-xl p-4 min-h-[160px] justify-start">
+              <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-400 select-none">
+                File Directory ({(project.uploadedFiles || []).length} active dossiers)
+              </span>
+
+              <div className="flex flex-col gap-1.5 max-h-[220px] overflow-y-auto pr-1 mt-1">
+                {(project.uploadedFiles || []).length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-8 text-slate-400 border border-slate-100/30 rounded-xl bg-slate-50/30 select-none">
+                    <span className="text-[11px] italic">No active attachments uploaded yet</span>
+                    <span className="text-[9px] mt-0.5">Use the upload box on the left to add items</span>
+                  </div>
+                ) : (
+                  [...(project.uploadedFiles || [])].reverse().map((file) => (
+                    <div key={file.id} className="flex items-center justify-between border border-blue-100/80 bg-white hover:bg-blue-55/10 rounded-lg px-2.5 py-2 text-xs transition duration-100 gap-2.5 shadow-2xs">
+                      <div className="flex items-center gap-2 overflow-hidden flex-1 select-none">
+                        <File size={14} className="text-blue-500 shrink-0" />
+                        <span className="truncate font-semibold text-slate-850 font-mono text-[10px]" title={file.name}>{file.name}</span>
+                        {file.vendorId ? (
+                          <span className="text-[8px] bg-indigo-50 text-indigo-700 font-bold border border-indigo-100 px-1 rounded-sm shrink-0">
+                            {project.vendors.find(v => v.id === file.vendorId)?.name || 'Linked'}
+                          </span>
+                        ) : (
+                          <span className="text-[8px] bg-slate-100 text-slate-500 font-medium border border-slate-150 px-1 rounded-sm shrink-0">General</span>
+                        )}
+                        <span className="text-[9px] text-slate-450 shrink-0">({(file.size / 1024).toFixed(1)} KB)</span>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button 
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); setActiveViewFile(file); }}
+                          className="p-1 hover:bg-blue-50 hover:text-blue-600 text-blue-500 rounded transition cursor-pointer"
+                          title="Interactive View"
+                        >
+                          <Eye size={12} />
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); downloadFile(file); }}
+                          className="p-1 hover:bg-slate-100 hover:text-slate-850 text-slate-550 rounded transition cursor-pointer"
+                          title="Download file"
+                        >
+                          <Download size={12} />
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); deleteUploadedFile(file.id); }}
+                          className="p-1 hover:bg-[#ffe4e6] hover:text-[#e11d48] text-slate-400 rounded transition cursor-pointer"
+                          title="Remove attachment"
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+
+      </main>
+
+      {/* Corporate signature strip */}
+      <footer className="mt-auto border-t border-slate-200 bg-white py-6 text-center text-slate-400 text-xs print:hidden">
+        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+          <p>© 2026 Vortex Offshore</p>
+          <div className="flex gap-4">
+            <a href="#" onClick={(e) => { e.preventDefault(); window.print(); }} className="hover:text-indigo-600 transition font-medium">Print to PDF</a>
+            <span className="text-slate-200">|</span>
+            <a href="#" onClick={(e) => { e.preventDefault(); resetToSample(); }} className="hover:text-indigo-600 transition font-medium">Load Initial Template</a>
+          </div>
+        </div>
+      </footer>
+
+      {/* Interactive File Viewer Lightbox / Modal */}
+      {activeViewFile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs print:hidden animate-fade-in">
+          <div className="bg-white rounded-2xl max-w-3xl w-full max-h-[85vh] flex flex-col shadow-2xl border border-slate-100 overflow-hidden">
+            {/* Modal Header */}
+            <div className="px-5 py-3.5 border-b border-slate-150 flex items-center justify-between bg-slate-50 select-none">
+              <div className="flex items-center gap-2 overflow-hidden mr-4">
+                <File className="text-indigo-650 shrink-0" size={16} />
+                <h3 className="font-bold text-slate-800 text-xs truncate" title={activeViewFile.name}>
+                  {activeViewFile.name}
+                </h3>
+                <span className="text-[10px] text-slate-400 font-mono shrink-0 bg-white px-1.5 py-0.5 border border-slate-200 rounded-lg">
+                  ({(activeViewFile.size / 1024).toFixed(1)} KB)
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => downloadFile(activeViewFile)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-55 hover:bg-indigo-100 text-indigo-700 font-bold text-[10px] rounded-lg transition"
+                >
+                  <Download size={13} /> Download
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveViewFile(null)}
+                  className="p-1 px-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-150 rounded-lg transition"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body with dynamic rendering based on file type */}
+            <div className="p-5 overflow-y-auto flex-1 bg-slate-100/35 flex items-center justify-center min-h-[300px]">
+              {activeViewFile.type.startsWith("image/") ? (
+                <img 
+                  src={activeViewFile.base64} 
+                  alt={activeViewFile.name} 
+                  className="max-h-[55vh] object-contain rounded-lg shadow-sm border border-slate-200"
+                  referrerPolicy="no-referrer"
+                />
+              ) : activeViewFile.type === "application/pdf" ? (
+                <iframe 
+                  src={activeViewFile.base64} 
+                  title={activeViewFile.name} 
+                  className="w-full h-[55vh] rounded-lg border border-slate-250 shadow-inner"
+                />
+              ) : activeViewFile.type.startsWith("text/") || activeViewFile.name.endsWith(".csv") || activeViewFile.name.endsWith(".json") || activeViewFile.name.endsWith(".xml") ? (
+                <pre className="w-full text-[10px] font-mono whitespace-pre-wrap break-all bg-slate-900 text-slate-300 p-4 rounded-xl max-h-[55vh] overflow-y-auto leading-relaxed shadow-inner">
+                  {getDecodedText(activeViewFile.base64)}
+                </pre>
+              ) : (
+                <div className="text-center flex flex-col items-center gap-3 p-8">
+                  <div className="w-14 h-14 bg-indigo-50 text-indigo-500 rounded-full flex items-center justify-center">
+                    <File size={26} />
+                  </div>
+                  <h4 className="font-bold text-slate-800 text-xs">Dynamic Preview Unavailable</h4>
+                  <p className="text-[11px] text-slate-500 max-w-xs leading-relaxed">
+                    This file format does not support plain text previews inside the app sandbox. Click Download on the top right to view with external specialist software local spreadsheets (e.g. MS Excel).
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+}

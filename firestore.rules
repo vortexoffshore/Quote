@@ -1,0 +1,14 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default fallback deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Restrict inputs to project space
+    match /projects/{projectId} {
+      allow read, write: if projectId is string && projectId.size() <= 128;
+    }
+  }
+}
