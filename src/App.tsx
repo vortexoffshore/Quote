@@ -95,9 +95,18 @@ export default function App() {
 
     setIsSyncing(true);
     try {
-      for (const p of projects) {
-        await setDoc(doc(db, "projects", p.id), p);
-      }
+      const savePromise = (async () => {
+        for (const p of projects) {
+          await setDoc(doc(db, "projects", p.id), p);
+        }
+      })();
+
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error("Timeout: Firestore write is hanging, likely due to write quota exhaustion.")), 3000);
+      });
+
+      await Promise.race([savePromise, timeoutPromise]);
+
       setIsUnsavedCloud(false);
       setIsSyncing(false);
       setIsQuotaExceeded(false); // Reset quota status flag on safe success
@@ -114,6 +123,7 @@ export default function App() {
       const isQuotaErr = 
         errMsg.includes("resource-exhausted") || 
         errMsg.includes("Quota exceeded") || 
+        errMsg.includes("Timeout") ||
         err?.code === "resource-exhausted";
       
       if (isQuotaErr) {
@@ -476,7 +486,7 @@ export default function App() {
   // Formatting helper
   const formatCurrency = (amount: number) => {
     const symbol = CURRENCY_SYMBOLS[project.currency] || "$";
-    return `${symbol}${amount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+    return `${symbol}${amount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
   };
 
   const showDualConversion = (amount: number, customClass = "") => {
@@ -484,8 +494,8 @@ export default function App() {
     const isUSD = project.currency === "USD";
     const converted = isUSD ? amount * 3.6725 : amount / 3.6725;
     const formatted = isUSD 
-      ? `AED ${converted.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}` 
-      : `$${converted.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+      ? `AED ${converted.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}` 
+      : `$${converted.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
     
     const styleClass = customClass || "text-[10px] text-slate-400 font-mono font-medium drop-shadow-[0_1px_1px_rgba(255,255,255,0.85)] dark:drop-shadow-[0_1px_1px_rgba(0,0,0,0.15)] leading-none mt-0.5 select-none text-right block pr-1";
     return (
@@ -1288,10 +1298,18 @@ export default function App() {
 
         if (isFirebaseConfigured && db) {
           try {
-            await deleteDoc(doc(db, "projects", idToDelete));
+            const deletePromise = deleteDoc(doc(db, "projects", idToDelete));
+            const timeoutPromise = new Promise((_, reject) => {
+              setTimeout(() => reject(new Error("Timeout deleting document")), 3000);
+            });
+            await Promise.race([deletePromise, timeoutPromise]);
             console.log(`Document ${idToDelete} deleted successfully from Firestore.`);
-          } catch (err) {
+          } catch (err: any) {
             console.error(`Failed to delete document ${idToDelete} from Firestore:`, err);
+            const errMsg = err?.message || String(err);
+            if (errMsg.includes("resource-exhausted") || errMsg.includes("Quota exceeded") || errMsg.includes("Timeout") || err?.code === "resource-exhausted") {
+              setIsQuotaExceeded(true);
+            }
           }
         }
       }
