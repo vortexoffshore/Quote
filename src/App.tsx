@@ -107,9 +107,9 @@ export default function App() {
     syncProjects();
   }, [projects]);
 
-  // TCO projection duration (2-year vs 3-year)
+  // TCO projection duration (1-year vs 2-year vs 3-year)
   const tcoYears = project.tcoYears || 2;
-  const setTcoYears = (val: 2 | 3) => {
+  const setTcoYears = (val: 1 | 2 | 3) => {
     updateCurrentProject({ ...project, tcoYears: val });
   };
 
@@ -230,6 +230,7 @@ export default function App() {
   const [editValue, setEditValue] = useState("");
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Quotes File Attachment Vault States & Handlers
@@ -397,7 +398,7 @@ export default function App() {
   };
 
   // Helper to determine annual scaling factor
-  const getComponentScaleFactor = (compName: string, compId: string, duration: 2 | 3, categoryComponents?: CostComponent[]): number => {
+  const getComponentScaleFactor = (compName: string, compId: string, duration: 1 | 2 | 3, categoryComponents?: CostComponent[]): number => {
     const nameLower = compName.toLowerCase();
     const idLower = compId.toLowerCase();
     
@@ -419,9 +420,12 @@ export default function App() {
 
     if (isYear1) return 1;
     if (isYear2) {
-      if (duration === 2) {
+      if (duration === 1) {
+        return 0;
+      } else if (duration === 2) {
         return 1;
       } else {
+        // duration is 3
         // Check if there's already a Year 3 component in the category
         const hasYear3 = categoryComponents?.some(c => {
           const cn = c.name.toLowerCase();
@@ -432,7 +436,10 @@ export default function App() {
       }
     }
     if (isYear3) {
-      return duration === 2 ? 0 : 1;
+      if (duration === 1 || duration === 2) {
+        return 0;
+      }
+      return 1;
     }
 
     // Generic annual components (e.g. "Annual Support Fee") with no specific year suffix
@@ -647,43 +654,56 @@ export default function App() {
       showToast("Cannot delete the last remaining scorecard criteria.", "error");
       return;
     }
-    if (!window.confirm(`Are you sure you want to remove criteria "${critName}"?`)) {
-      return;
-    }
 
-    updated.criteria = currentCriteria.filter(c => c.id !== critId);
+    setConfirmDialog({
+      title: "Remove Criteria",
+      message: `Are you sure you want to remove criteria "${critName}"?`,
+      onConfirm: () => {
+        updated.criteria = currentCriteria.filter(c => c.id !== critId);
 
-    // Prune ratings
-    setScorecards(prev => {
-      const projId = project.id;
-      const currentProj = prev[projId] || {};
-      const nextProj = { ...currentProj };
-      Object.keys(nextProj).forEach(vId => {
-        if (nextProj[vId]) {
-          const nextScores = { ...nextProj[vId] };
-          delete nextScores[critId];
-          nextProj[vId] = nextScores;
-        }
-      });
-      return {
-        ...prev,
-        [projId]: nextProj
-      };
+        // Prune ratings
+        setScorecards(prev => {
+          const projId = project.id;
+          const currentProj = prev[projId] || {};
+          const nextProj = { ...currentProj };
+          Object.keys(nextProj).forEach(vId => {
+            if (nextProj[vId]) {
+              const nextScores = { ...nextProj[vId] };
+              delete nextScores[critId];
+              nextProj[vId] = nextScores;
+            }
+          });
+          return {
+            ...prev,
+            [projId]: nextProj
+          };
+        });
+
+        updateCurrentProject(updated);
+        showToast(`Removed criteria "${critName}"`);
+      }
     });
-
-    updateCurrentProject(updated);
-    showToast(`Removed criteria "${critName}"`);
   };
 
   const handleCellChange = (catId: string, compId: string, venId: string, valueStr: string) => {
     const numericVal = parseFloat(valueStr.replace(/[^0-9.-]/g, "")) || 0;
     
-    // Create copy of project
-    const updated = { ...project };
-    if (!updated.costValues[catId]) updated.costValues[catId] = {};
-    if (!updated.costValues[catId][compId]) updated.costValues[catId][compId] = {};
+    // Immutable nesting update to ensure correct React re-renders and auto-calculations
+    const updatedCostValues = {
+      ...project.costValues,
+      [catId]: {
+        ...project.costValues[catId],
+        [compId]: {
+          ...(project.costValues[catId]?.[compId] || {}),
+          [venId]: numericVal
+        }
+      }
+    };
     
-    updated.costValues[catId][compId][venId] = numericVal;
+    const updated: QuoteProject = {
+      ...project,
+      costValues: updatedCostValues
+    };
     updateCurrentProject(updated);
   };
 
@@ -714,35 +734,47 @@ export default function App() {
   };
 
   const handleVendorNotesChange = (venId: string, notes: string) => {
-    const updated = { ...project };
-    if (!updated.vendorNotes) updated.vendorNotes = {};
-    updated.vendorNotes[venId] = notes;
+    const updatedVendorNotes = {
+      ...project.vendorNotes,
+      [venId]: notes
+    };
+    const updated: QuoteProject = {
+      ...project,
+      vendorNotes: updatedVendorNotes
+    };
     updateCurrentProject(updated);
   };
 
   const handleGeneralNotesChange = (text: string) => {
-    const updated = { ...project };
-    updated.generalNotes = text;
+    const updated: QuoteProject = {
+      ...project,
+      generalNotes: text
+    };
     updateCurrentProject(updated);
   };
 
   // Add Vendor Column
   const addNewVendor = () => {
-    const updated = { ...project };
     const randomHex = Math.random().toString(36).substring(2, 7);
     const newId = `vendor-${randomHex}`;
-    const newName = `New Vendor ${String.fromCharCode(65 + updated.vendors.length)}`;
+    const newName = `New Vendor ${String.fromCharCode(65 + project.vendors.length)}`;
     
-    updated.vendors.push({ id: newId, name: newName });
+    const updatedVendors = [...project.vendors, { id: newId, name: newName }];
+    const updatedCostValues = JSON.parse(JSON.stringify(project.costValues));
     
-    // Initialize empty values
-    updated.categories.forEach(cat => {
-      if (!updated.costValues[cat.id]) updated.costValues[cat.id] = {};
+    project.categories.forEach(cat => {
+      if (!updatedCostValues[cat.id]) updatedCostValues[cat.id] = {};
       cat.components.forEach(comp => {
-        if (!updated.costValues[cat.id][comp.id]) updated.costValues[cat.id][comp.id] = {};
-        updated.costValues[cat.id][comp.id][newId] = 0;
+        if (!updatedCostValues[cat.id][comp.id]) updatedCostValues[cat.id][comp.id] = {};
+        updatedCostValues[cat.id][comp.id][newId] = 0;
       });
     });
+
+    const updated: QuoteProject = {
+      ...project,
+      vendors: updatedVendors,
+      costValues: updatedCostValues,
+    };
 
     // Initialize qualitative scorecard
     setScorecards(prev => {
@@ -770,32 +802,40 @@ export default function App() {
       showToast("Cannot delete the last remaining vendor column.", "error");
       return;
     }
-    if (!window.confirm(`Are you sure you want to delete vendor "${venName}" and all associated cost entries?`)) {
-      return;
-    }
 
-    const updated = { ...project };
-    updated.vendors = updated.vendors.filter(v => v.id !== venId);
+    setConfirmDialog({
+      title: "Delete Vendor Column",
+      message: `Are you sure you want to delete vendor "${venName}" and all associated cost entries?`,
+      onConfirm: () => {
+        const updatedVendors = project.vendors.filter(v => v.id !== venId);
+        const updatedCostValues = JSON.parse(JSON.stringify(project.costValues));
 
-    // Prune values mapping
-    Object.keys(updated.costValues).forEach(catId => {
-      Object.keys(updated.costValues[catId]).forEach(compId => {
-        if (updated.costValues[catId][compId]) {
-          delete updated.costValues[catId][compId][venId];
-        }
-      });
+        // Prune values mapping
+        Object.keys(updatedCostValues).forEach(catId => {
+          Object.keys(updatedCostValues[catId]).forEach(compId => {
+            if (updatedCostValues[catId][compId]) {
+              delete updatedCostValues[catId][compId][venId];
+            }
+          });
+        });
+
+        const updated: QuoteProject = {
+          ...project,
+          vendors: updatedVendors,
+          costValues: updatedCostValues
+        };
+
+        updateCurrentProject(updated);
+        showToast(`Deleted vendor "${venName}"`);
+      }
     });
-
-    updateCurrentProject(updated);
-    showToast(`Deleted vendor ${venName}`);
   };
 
   // Add Cost Category Table
   const addNewCategory = () => {
-    const updated = { ...project };
     const randomHex = Math.random().toString(36).substring(2, 7);
     const newCatId = `category-${randomHex}`;
-    const newCatName = `Custom Category ${updated.categories.length + 1}`;
+    const newCatName = `Custom Category ${project.categories.length + 1}`;
 
     const newCategory: Category = {
       id: newCatId,
@@ -808,24 +848,32 @@ export default function App() {
       ]
     };
 
-    updated.categories.push(newCategory);
+    const updatedCategories = [...project.categories, newCategory];
+    const updatedCostValues = JSON.parse(JSON.stringify(project.costValues));
 
     // Initialize values mapping with 0s
-    updated.costValues[newCatId] = {
+    updatedCostValues[newCatId] = {
       "setup-cost": {},
       "one-time-integration": {},
       "annual-fee-year-1": {},
       "annual-fee-year-2": {}
     };
 
-    updated.vendors.forEach(v => {
-      updated.costValues[newCatId]["setup-cost"][v.id] = 0;
-      updated.costValues[newCatId]["one-time-integration"][v.id] = 0;
-      updated.costValues[newCatId]["annual-fee-year-1"][v.id] = 0;
-      updated.costValues[newCatId]["annual-fee-year-2"][v.id] = 0;
+    project.vendors.forEach(v => {
+      updatedCostValues[newCatId]["setup-cost"][v.id] = 0;
+      updatedCostValues[newCatId]["one-time-integration"][v.id] = 0;
+      updatedCostValues[newCatId]["annual-fee-year-1"][v.id] = 0;
+      updatedCostValues[newCatId]["annual-fee-year-2"][v.id] = 0;
     });
 
-    updated.comments[newCatId] = "";
+    const updatedComments = { ...project.comments, [newCatId]: "" };
+
+    const updated: QuoteProject = {
+      ...project,
+      categories: updatedCategories,
+      costValues: updatedCostValues,
+      comments: updatedComments
+    };
 
     updateCurrentProject(updated);
     showToast(`Created category "${newCatName}" with default cost components.`);
@@ -843,40 +891,59 @@ export default function App() {
       showToast("Cannot delete the last remaining cost category.", "error");
       return;
     }
-    if (!window.confirm(`Are you sure you want to delete category "${catName}" and all of its row entries?`)) {
-      return;
-    }
 
-    const updated = { ...project };
-    updated.categories = updated.categories.filter(c => c.id !== catId);
-    delete updated.costValues[catId];
-    if (updated.comments) {
-      delete updated.comments[catId];
-    }
+    setConfirmDialog({
+      title: "Delete Cost Category",
+      message: `Are you sure you want to delete category "${catName}" and all of its row entries?`,
+      onConfirm: () => {
+        const updatedCategories = project.categories.filter(c => c.id !== catId);
+        const updatedCostValues = JSON.parse(JSON.stringify(project.costValues));
+        delete updatedCostValues[catId];
+        
+        const updatedComments = { ...project.comments };
+        delete updatedComments[catId];
 
-    updateCurrentProject(updated);
-    showToast(`Deleted category ${catName}`);
+        const updated: QuoteProject = {
+          ...project,
+          categories: updatedCategories,
+          costValues: updatedCostValues,
+          comments: updatedComments
+        };
+
+        updateCurrentProject(updated);
+        showToast(`Deleted category "${catName}"`);
+      }
+    });
   };
 
   // Add Cost Row (Component) to Category
   const addCostComponent = (catId: string) => {
-    const updated = { ...project };
-    const cat = updated.categories.find(c => c.id === catId);
-    if (!cat) return;
-
     const randomHex = Math.random().toString(36).substring(2, 7);
     const newCompId = `component-${randomHex}`;
     const newCompName = "New Cost Component";
 
-    const newComp: CostComponent = { id: newCompId, name: newCompName };
-    cat.components.push(newComp);
-
-    // Initialize vendor columns to 0
-    if (!updated.costValues[catId]) updated.costValues[catId] = {};
-    updated.costValues[catId][newCompId] = {};
-    updated.vendors.forEach(v => {
-      updated.costValues[catId][newCompId][v.id] = 0;
+    const updatedCategories = project.categories.map(c => {
+      if (c.id === catId) {
+        return {
+          ...c,
+          components: [...c.components, { id: newCompId, name: newCompName }]
+        };
+      }
+      return c;
     });
+
+    const updatedCostValues = JSON.parse(JSON.stringify(project.costValues));
+    if (!updatedCostValues[catId]) updatedCostValues[catId] = {};
+    updatedCostValues[catId][newCompId] = {};
+    project.vendors.forEach(v => {
+      updatedCostValues[catId][newCompId][v.id] = 0;
+    });
+
+    const updated: QuoteProject = {
+      ...project,
+      categories: updatedCategories,
+      costValues: updatedCostValues
+    };
 
     updateCurrentProject(updated);
     showToast("Added new entry row. Type component details directly.");
@@ -888,8 +955,7 @@ export default function App() {
 
   // Delete Cost Component Row
   const deleteCostComponent = (catId: string, compId: string, compName: string) => {
-    const updated = { ...project };
-    const cat = updated.categories.find(c => c.id === catId);
+    const cat = project.categories.find(c => c.id === catId);
     if (!cat) return;
 
     if (cat.components.length <= 1) {
@@ -897,10 +963,26 @@ export default function App() {
       return;
     }
 
-    cat.components = cat.components.filter(c => c.id !== compId);
-    if (updated.costValues[catId] && updated.costValues[catId][compId]) {
-      delete updated.costValues[catId][compId];
+    const updatedCategories = project.categories.map(c => {
+      if (c.id === catId) {
+        return {
+          ...c,
+          components: c.components.filter(comp => comp.id !== compId)
+        };
+      }
+      return c;
+    });
+
+    const updatedCostValues = JSON.parse(JSON.stringify(project.costValues));
+    if (updatedCostValues[catId] && updatedCostValues[catId][compId]) {
+      delete updatedCostValues[catId][compId];
     }
+
+    const updated: QuoteProject = {
+      ...project,
+      categories: updatedCategories,
+      costValues: updatedCostValues
+    };
 
     updateCurrentProject(updated);
     showToast(`Deleted component row "${compName}"`);
@@ -978,27 +1060,31 @@ export default function App() {
   };
 
   const resetToSample = () => {
-    if (window.confirm("This will overwrite the current project with the default sample data. Proceed?")) {
-      // Find default template
-      const template = DEFAULT_PROJECTS[0];
-      const resetProject = JSON.parse(JSON.stringify(template));
-      resetProject.id = project.id; // Preserve active ID
-      
-      setProjects(prev => prev.map(p => p.id === project.id ? resetProject : p));
-      
-      // Reset scorecard
-      setScorecards(prev => ({
-        ...prev,
-        [project.id]: {
-          "vendor-a": { technical: 4, support: 5, ease: 3, value: 4 },
-          "vendor-b": { technical: 5, support: 4, ease: 4, value: 3 },
-          "vendor-c": { technical: 2, support: 2, ease: 5, value: 4 },
-          "vendor-new": { technical: 1, support: 1, ease: 1, value: 1 },
-        }
-      }));
+    setConfirmDialog({
+      title: "Overwrite with Initial Template",
+      message: "This will overwrite the current project with the default sample data. Proceed?",
+      onConfirm: () => {
+        // Find default template
+        const template = DEFAULT_PROJECTS[0];
+        const resetProject = JSON.parse(JSON.stringify(template));
+        resetProject.id = project.id; // Preserve active ID
+        
+        setProjects(prev => prev.map(p => p.id === project.id ? resetProject : p));
+        
+        // Reset scorecard
+        setScorecards(prev => ({
+          ...prev,
+          [project.id]: {
+            "vendor-a": { technical: 4, support: 5, ease: 3, value: 4 },
+            "vendor-b": { technical: 5, support: 4, ease: 4, value: 3 },
+            "vendor-c": { technical: 2, support: 2, ease: 5, value: 4 },
+            "vendor-new": { technical: 1, support: 1, ease: 1, value: 1 },
+          }
+        }));
 
-      showToast("Restored initial test data comparison state!");
-    }
+        showToast("Restored initial test data comparison state!");
+      }
+    });
   };
 
   const deleteCurrentProject = async () => {
@@ -1006,24 +1092,27 @@ export default function App() {
       showToast("Cannot delete the last remaining project.", "error");
       return;
     }
-    if (!window.confirm(`Are you sure you want to delete comparison project "${project.name}"?`)) {
-      return;
-    }
 
-    const idToDelete = project.id;
-    const remaining = projects.filter(p => p.id !== idToDelete);
-    setProjects(remaining);
-    setActiveProjectId(remaining[0].id);
-    showToast("Deleted comparison project.");
+    setConfirmDialog({
+      title: "Delete Comparison Project",
+      message: `Are you sure you want to delete comparison project "${project.name}"?`,
+      onConfirm: async () => {
+        const idToDelete = project.id;
+        const remaining = projects.filter(p => p.id !== idToDelete);
+        setProjects(remaining);
+        setActiveProjectId(remaining[0].id);
+        showToast("Deleted comparison project.");
 
-    if (isFirebaseConfigured && db) {
-      try {
-        await deleteDoc(doc(db, "projects", idToDelete));
-        console.log(`Document ${idToDelete} deleted successfully from Firestore.`);
-      } catch (err) {
-        console.error(`Failed to delete document ${idToDelete} from Firestore:`, err);
+        if (isFirebaseConfigured && db) {
+          try {
+            await deleteDoc(doc(db, "projects", idToDelete));
+            console.log(`Document ${idToDelete} deleted successfully from Firestore.`);
+          } catch (err) {
+            console.error(`Failed to delete document ${idToDelete} from Firestore:`, err);
+          }
+        }
       }
-    }
+    });
   };
 
   // Export JSON file
@@ -1521,6 +1610,19 @@ export default function App() {
                   <Clock size={11} /> TCO Duration
                 </span>
                 <div className="flex items-center gap-1 mt-0.5 print:hidden">
+                  <button
+                    onClick={() => {
+                      setTcoYears(1);
+                      showToast("Toggled TCO projection to 1 Year");
+                    }}
+                    className={`px-2 py-0.5 text-[10px] font-extrabold rounded transition-all cursor-pointer ${
+                      tcoYears === 1 
+                        ? "bg-indigo-600 text-white shadow-xs" 
+                        : "bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800"
+                    }`}
+                  >
+                    1-Yr
+                  </button>
                   <button
                     onClick={() => {
                       setTcoYears(2);
@@ -2839,6 +2941,42 @@ export default function App() {
                   </p>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reusable Premium Non-blocking Confirmation Dialog */}
+      {confirmDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs print:hidden">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-100 flex flex-col gap-4 animate-scale-up">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-full bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 shrink-0">
+                <Trash2 size={20} />
+              </div>
+              <div className="flex-grow select-none">
+                <h3 className="font-bold text-slate-900 text-sm tracking-tight">{confirmDialog.title}</h3>
+                <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">{confirmDialog.message}</p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2.5 mt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDialog(null)}
+                className="px-3.5 py-1.5 border border-slate-200 text-slate-600 hover:bg-slate-50 font-bold text-[11px] rounded-lg transition duration-100 cursor-pointer"
+              >
+                No, Keep It
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  confirmDialog.onConfirm();
+                  setConfirmDialog(null);
+                }}
+                className="px-4 py-1.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-[11px] rounded-lg transition duration-100 shadow-sm cursor-pointer"
+              >
+                Yes, Proceed
+              </button>
             </div>
           </div>
         </div>

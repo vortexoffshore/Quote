@@ -47,6 +47,6 @@ export interface QuoteProject {
   vendorNotes: Record<string, string>;
   generalNotes: string;
   uploadedFiles?: UploadedFile[];
-  tcoYears?: 2 | 3;
+  tcoYears?: 1 | 2 | 3;
   transposeMatrix?: boolean;
 }
