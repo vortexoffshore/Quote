@@ -184,18 +184,8 @@ export default function App() {
     }
   }, [projects]);
 
-  // Cloud autosave interval (every 1 minute)
-  useEffect(() => {
-    if (!isFirebaseConfigured || !db || isQuotaExceeded) return;
-
-    const intervalId = setInterval(() => {
-      if (isUnsavedCloud) {
-        saveToCloud(true);
-      }
-    }, 60000); // 1 minute
-
-    return () => clearInterval(intervalId);
-  }, [isUnsavedCloud, projects, isQuotaExceeded]);
+  // Cloud autosave disabled due to Firestore write quota exhaustion.
+  // We rely fully on local storage backup to prevent trailing sync errors.
 
   // TCO projection duration (1-year vs 2-year vs 3-year)
   const tcoYears = project.tcoYears || 2;
@@ -1617,42 +1607,6 @@ export default function App() {
             >
               <Copy size={14} /> Clone
             </button>
-            <button 
-              onClick={() => {
-                if (isQuotaExceeded) {
-                  setIsQuotaExceeded(false);
-                }
-                saveToCloud();
-              }}
-              disabled={isSyncing}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition duration-150 cursor-pointer ${
-                isSyncing 
-                  ? "bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed" 
-                  : isQuotaExceeded
-                    ? "bg-amber-500 hover:bg-amber-600 text-slate-900 shadow-xs"
-                    : isUnsavedCloud 
-                      ? "bg-amber-500 hover:bg-amber-600 text-white shadow-xs shadow-amber-100 animate-pulse-subtle" 
-                      : "bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs"
-              }`}
-              title={isQuotaExceeded ? "Firestore write limit reached. Your browser's HTML5 local storage is currently backing up every edit." : "Manual sync/save to secure cloud Firebase database"}
-            >
-              {isSyncing ? (
-                <>
-                  <RefreshCw className="animate-spin" size={13} />
-                  Saving...
-                </>
-              ) : isQuotaExceeded ? (
-                <>
-                  <AlertTriangle size={13} />
-                  Local Storage Active
-                </>
-              ) : (
-                <>
-                  <Save size={13} />
-                  {isUnsavedCloud ? "Save (Unsaved)" : "Save"}
-                </>
-              )}
-            </button>
             <div className="h-6 w-px bg-slate-200 mx-1"></div>
             <button 
               onClick={exportToJson}
@@ -1695,30 +1649,26 @@ export default function App() {
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full flex flex-col gap-8">
         
-        {isQuotaExceeded && (
-          <div className="bg-amber-50/70 border border-amber-200/50 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs print:hidden animate-fade-in">
-            <div className="flex items-start gap-3">
-              <div className="p-2 bg-amber-100 text-amber-700 rounded-xl">
-                <AlertTriangle size={18} />
-              </div>
-              <div>
-                <h4 className="text-xs font-black text-amber-800 uppercase tracking-wider">Cloud Sync Quota Exceeded (Billing Limits)</h4>
-                <p className="text-[11px] text-slate-600 mt-0.5 leading-relaxed">
-                  Your team has exceeded Google Firestore's free write quota for today. <strong>No actions required:</strong> your data is safely persisted in your browser's local storage and will restore completely when you return!
-                </p>
-              </div>
+        {/* Cloud Sync Status Alert Bar */}
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-3xs print:hidden animate-fade-in">
+          <div className="flex items-start gap-2.5">
+            <div className="p-1.5 bg-amber-100 text-amber-700 rounded-lg mt-0.5">
+              <AlertTriangle size={16} />
             </div>
-            <button
-              onClick={() => {
-                setIsQuotaExceeded(false);
-                saveToCloud(false);
-              }}
-              className="bg-amber-500 hover:bg-amber-600 text-slate-900 font-bold px-4.5 py-2 text-xs rounded-xl transition duration-150 shrink-0 cursor-pointer shadow-subtle border border-amber-400/30"
-            >
-              Retry Cloud Sync
-            </button>
+            <div>
+              <h4 className="text-[11px] font-bold text-amber-900 uppercase tracking-wider">Database Status: Local Fallback</h4>
+              <p className="text-xs font-bold text-amber-800 mt-1">
+                Your team has exceeded Google Firestore's free write quota for today.
+              </p>
+              <p className="text-[11px] text-slate-600 mt-0.5 leading-relaxed">
+                Cloud automatic synchronization is temporarily paused. <strong>No actions required:</strong> all adjustments, projects, and comparison updates are safely saved on your computer first!
+              </p>
+            </div>
           </div>
-        )}
+          <div className="xs:self-end sm:self-auto px-2 py-0.5 bg-amber-100 rounded text-[9px] text-amber-800 font-bold uppercase tracking-wider select-none">
+            Offline Saved
+          </div>
+        </div>
         
         {/* Project Selector Sidebar panel / info bar */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200/40 pb-5 print:hidden">
