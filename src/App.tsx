@@ -29,7 +29,8 @@ import {
   Paperclip,
   UploadCloud,
   Eye,
-  Download
+  Download,
+  AlertTriangle
 } from "lucide-react";
 import { doc, setDoc, getDocs, collection, deleteDoc } from "firebase/firestore";
 import { db, isFirebaseConfigured, handleFirestoreError, OperationType } from "./firebase";
@@ -58,12 +59,81 @@ export default function App() {
     return projects[0]?.id || "project-1";
   });
 
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [isUnsavedCloud, setIsUnsavedCloud] = useState(false);
+  
+  const [isQuotaExceededState, setIsQuotaExceededState] = useState<boolean>(() => {
+    return localStorage.getItem("firebase_quota_exceeded") === "true";
+  });
+
+  const isQuotaExceeded = isQuotaExceededState;
+  const setIsQuotaExceeded = (val: boolean) => {
+    setIsQuotaExceededState(val);
+    if (val) {
+      localStorage.setItem("firebase_quota_exceeded", "true");
+    } else {
+      localStorage.removeItem("firebase_quota_exceeded");
+    }
+  };
+
   // Selected project object
   const project = projects.find((p) => p.id === activeProjectId) || projects[0];
 
+  const saveToCloud = async (silent = false) => {
+    if (!isFirebaseConfigured || !db) {
+      if (!silent) {
+        showToast("Firebase is not configured yet.", "error");
+      }
+      return;
+    }
+
+    // If quota was previously exceeded, skip silent automated background saves to prevent console spam
+    if (silent && isQuotaExceeded) {
+      console.log("Firestore write quota previously exhausted. Skipping automated background sync to prevent error spam.");
+      return;
+    }
+
+    setIsSyncing(true);
+    try {
+      for (const p of projects) {
+        await setDoc(doc(db, "projects", p.id), p);
+      }
+      setIsUnsavedCloud(false);
+      setIsSyncing(false);
+      setIsQuotaExceeded(false); // Reset quota status flag on safe success
+      if (!silent) {
+        showToast("Data synced to cloud successfully!", "success");
+      } else {
+        console.log("Cloud autosave sync completed successfully.");
+      }
+    } catch (err: any) {
+      setIsSyncing(false);
+      console.error("Failed to sync project dataset to Firebase:", err);
+      
+      const errMsg = err?.message || String(err);
+      const isQuotaErr = 
+        errMsg.includes("resource-exhausted") || 
+        errMsg.includes("Quota exceeded") || 
+        err?.code === "resource-exhausted";
+      
+      if (isQuotaErr) {
+        setIsQuotaExceeded(true);
+        if (!silent) {
+          showToast("Cloud storage quota exceeded. Changes saved locally!", "error");
+        } else {
+          console.warn("Cloud write quota exceeded. Standard local fallback remains fully active.");
+        }
+      } else {
+        if (!silent) {
+          showToast("Cloud sync failed. High latency/unauthorized.", "error");
+        }
+      }
+    }
+  };
+
   // Load projects from Firebase on mount
   useEffect(() => {
-    if (!isFirebaseConfigured || !db) return;
+    if (!isFirebaseConfigured || !db || isQuotaExceeded) return;
 
     const fetchProjects = async () => {
       try {
@@ -80,32 +150,42 @@ export default function App() {
           }
           console.log("Projects successfully synchronized from Firebase.");
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error("Error fetching projects from Firebase:", err);
+        const errMsg = err?.message || String(err);
+        if (errMsg.includes("resource-exhausted") || errMsg.includes("Quota exceeded") || err?.code === "resource-exhausted") {
+          setIsQuotaExceeded(true);
+        }
       }
     };
 
     fetchProjects();
   }, []);
 
-  // Save projects to localStorage and sync to Firebase immediately whenever they change
+  // Save projects to localStorage and mark cloud dirty on change (skipping initial empty state loading)
+  const isInitialProjectsLoad = useRef(true);
   useEffect(() => {
     localStorage.setItem("quote_compare_projects", JSON.stringify(projects));
-
-    if (!isFirebaseConfigured || !db) return;
-
-    const syncProjects = async () => {
-      try {
-        for (const p of projects) {
-          await setDoc(doc(db, "projects", p.id), p);
-        }
-      } catch (err) {
-        console.error("Failed to sync project dataset to Firebase:", err);
-      }
-    };
-
-    syncProjects();
+    
+    if (isInitialProjectsLoad.current) {
+      isInitialProjectsLoad.current = false;
+    } else {
+      setIsUnsavedCloud(true);
+    }
   }, [projects]);
+
+  // Cloud autosave interval (every 1 minute)
+  useEffect(() => {
+    if (!isFirebaseConfigured || !db || isQuotaExceeded) return;
+
+    const intervalId = setInterval(() => {
+      if (isUnsavedCloud) {
+        saveToCloud(true);
+      }
+    }, 60000); // 1 minute
+
+    return () => clearInterval(intervalId);
+  }, [isUnsavedCloud, projects, isQuotaExceeded]);
 
   // TCO projection duration (1-year vs 2-year vs 3-year)
   const tcoYears = project.tcoYears || 2;
@@ -118,6 +198,8 @@ export default function App() {
   const setTransposeMatrix = (val: boolean) => {
     updateCurrentProject({ ...project, transposeMatrix: val });
   };
+
+  const [activePerspective, setActivePerspective] = useState<"matrix" | "vendor">("matrix");
 
   // Drag and drop states
   const [draggedCategoryIndex, setDraggedCategoryIndex] = useState<number | null>(null);
@@ -397,6 +479,44 @@ export default function App() {
     return `${symbol}${amount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
   };
 
+  const showDualConversion = (amount: number, customClass = "") => {
+    if (amount === undefined || amount === null || isNaN(amount) || amount === 0) return null;
+    const isUSD = project.currency === "USD";
+    const converted = isUSD ? amount * 3.6725 : amount / 3.6725;
+    const formatted = isUSD 
+      ? `AED ${converted.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}` 
+      : `$${converted.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+    
+    const styleClass = customClass || "text-[10px] text-slate-400 font-mono font-medium drop-shadow-[0_1px_1px_rgba(255,255,255,0.85)] dark:drop-shadow-[0_1px_1px_rgba(0,0,0,0.15)] leading-none mt-0.5 select-none text-right block pr-1";
+    return (
+      <span className={styleClass}>
+        {formatted}
+      </span>
+    );
+  };
+
+  const formatDateDDMMYYYY = (dateStr: string) => {
+    if (!dateStr) return "";
+    if (/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr)) return dateStr;
+    const parts = dateStr.split("-");
+    if (parts.length === 3) {
+      const year = parts[0];
+      const month = parts[1];
+      const day = parts[2];
+      return `${day}/${month}/${year}`;
+    }
+    try {
+      const d = new Date(dateStr);
+      if (!isNaN(d.getTime())) {
+        const day = String(d.getDate()).padStart(2, "0");
+        const month = String(d.getMonth() + 1).padStart(2, "0");
+        const year = d.getFullYear();
+        return `${day}/${month}/${year}`;
+      }
+    } catch (e) {}
+    return dateStr;
+  };
+
   // Helper to determine annual scaling factor
   const getComponentScaleFactor = (compName: string, compId: string, duration: 1 | 2 | 3, categoryComponents?: CostComponent[]): number => {
     const nameLower = compName.toLowerCase();
@@ -447,6 +567,28 @@ export default function App() {
   };
 
   // Calculated utilities
+  // Scorecard rating average
+  const getVendorScorecardAvg = (venId: string): number => {
+    const currentCriteria = project.criteria || [
+      { id: "technical", name: "Technical Competency", description: "API robustness, ERP/Invoicing standard compatibility" },
+      { id: "support", name: "SLA & Customer Support", description: "Response times, dedicated account rep, service coverage" },
+      { id: "ease", name: "Implementation Ease", description: "Ready connectors, onboarding speed, developer docs" },
+      { id: "value", name: "Business Integrity", description: "Vendor history, market share, financials viability" }
+    ];
+    const pScores = scorecards[project.id]?.[venId] || {};
+    let sum = 0;
+    let count = 0;
+    currentCriteria.forEach(crit => {
+      const val = pScores[crit.id] ?? 0;
+      if (val > 0) {
+        sum += val;
+        count++;
+      }
+    });
+    if (count === 0) return 0;
+    return Number((sum / count).toFixed(1));
+  };
+
   const getCategoryTotalForVendor = (catId: string, venId: string): number => {
     const category = project.categories.find(c => c.id === catId);
     if (!category) return 0;
@@ -502,27 +644,27 @@ export default function App() {
 
   const briefing = getFinancialBriefing();
 
-  // Scorecard rating average
-  const getVendorScorecardAvg = (venId: string): number => {
-    const currentCriteria = project.criteria || [
-      { id: "technical", name: "Technical Competency", description: "API robustness, ERP/Invoicing standard compatibility" },
-      { id: "support", name: "SLA & Customer Support", description: "Response times, dedicated account rep, service coverage" },
-      { id: "ease", name: "Implementation Ease", description: "Ready connectors, onboarding speed, developer docs" },
-      { id: "value", name: "Business Integrity", description: "Vendor history, market share, financials viability" }
-    ];
-    const pScores = scorecards[project.id]?.[venId] || {};
-    let sum = 0;
-    let count = 0;
-    currentCriteria.forEach(crit => {
-      const val = pScores[crit.id] ?? 0;
-      if (val > 0) {
-        sum += val;
-        count++;
-      }
-    });
-    if (count === 0) return 0;
-    return Number((sum / count).toFixed(1));
-  };
+  const cheapestVendor = [...project.vendors]
+    .map(v => ({ id: v.id, name: v.name, total: getVendorGrandTotal(v.id) }))
+    .filter(x => x.total > 0)
+    .sort((a, b) => a.total - b.total)[0] || null;
+
+  const highestRatedVendor = [...project.vendors]
+    .map(v => ({ id: v.id, name: v.name, score: getVendorScorecardAvg(v.id) }))
+    .sort((a, b) => b.score - a.score)[0] || null;
+
+  const bestValueVendor = [...project.vendors]
+    .map(v => {
+      const total = getVendorGrandTotal(v.id);
+      const score = getVendorScorecardAvg(v.id);
+      const index = total > 0 ? (score * 100000) / total : 0;
+      return { id: v.id, name: v.name, index, total, score };
+    })
+    .filter(x => x.total > 0)
+    .sort((a, b) => b.index - a.index)[0] || null;
+
+  const activeTotalsList = project.vendors.map(v => getVendorGrandTotal(v.id)).filter(t => t > 0);
+  const avgProjectCost = activeTotalsList.length > 0 ? activeTotalsList.reduce((a, b) => a + b, 0) / activeTotalsList.length : 0;
 
   // Field Edit Handlers
   const startEditing = (type: typeof editingField.type, id?: string, subId?: string, currentVal: string = "") => {
@@ -749,6 +891,47 @@ export default function App() {
     const updated: QuoteProject = {
       ...project,
       generalNotes: text
+    };
+    updateCurrentProject(updated);
+  };
+
+  const handleVendorPlanChange = (vId: string, val: string) => {
+    const updated: QuoteProject = {
+      ...project,
+      vendorPlans: {
+        ...(project.vendorPlans || {}),
+        [vId]: val
+      }
+    };
+    updateCurrentProject(updated);
+  };
+
+  const handlePaymentMilestonesChange = (vId: string, val: string) => {
+    const updated: QuoteProject = {
+      ...project,
+      paymentMilestones: {
+        ...(project.paymentMilestones || {}),
+        [vId]: val
+      }
+    };
+    updateCurrentProject(updated);
+  };
+
+  const handleOnboardingTimelineChange = (vId: string, val: string) => {
+    const updated: QuoteProject = {
+      ...project,
+      onboardingTimelines: {
+        ...(project.onboardingTimelines || {}),
+        [vId]: val
+      }
+    };
+    updateCurrentProject(updated);
+  };
+
+  const recommendVendor = (vId: string) => {
+    const updated: QuoteProject = {
+      ...project,
+      recommendedVendorId: vId
     };
     updateCurrentProject(updated);
   };
@@ -1151,7 +1334,7 @@ export default function App() {
       rows.push(["QUOTE COMPARISON PROJECT SPECIFICATION"]);
       rows.push(["Project ID", project.id]);
       rows.push(["Project Name", project.name]);
-      rows.push(["Evaluation Date", project.date]);
+      rows.push(["Evaluation Date", formatDateDDMMYYYY(project.date)]);
       rows.push(["Sheet Version", project.version]);
       rows.push(["Currency", project.currency]);
       rows.push([]); // blank divider
@@ -1417,11 +1600,40 @@ export default function App() {
               <Copy size={14} /> Clone
             </button>
             <button 
-              onClick={resetToSample}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 text-slate-600 hover:text-slate-900 text-xs font-semibold rounded-lg hover:bg-slate-100 transition duration-150 cursor-pointer"
-              title="Restore initial TEST template data"
+              onClick={() => {
+                if (isQuotaExceeded) {
+                  setIsQuotaExceeded(false);
+                }
+                saveToCloud();
+              }}
+              disabled={isSyncing}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg transition duration-150 cursor-pointer ${
+                isSyncing 
+                  ? "bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed" 
+                  : isQuotaExceeded
+                    ? "bg-amber-500 hover:bg-amber-600 text-slate-900 shadow-xs"
+                    : isUnsavedCloud 
+                      ? "bg-amber-500 hover:bg-amber-600 text-white shadow-xs shadow-amber-100 animate-pulse-subtle" 
+                      : "bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs"
+              }`}
+              title={isQuotaExceeded ? "Firestore write limit reached. Your browser's HTML5 local storage is currently backing up every edit." : "Manual sync/save to secure cloud Firebase database"}
             >
-              <RefreshCw size={13} /> Reset
+              {isSyncing ? (
+                <>
+                  <RefreshCw className="animate-spin" size={13} />
+                  Saving...
+                </>
+              ) : isQuotaExceeded ? (
+                <>
+                  <AlertTriangle size={13} />
+                  Local Storage Active
+                </>
+              ) : (
+                <>
+                  <Save size={13} />
+                  {isUnsavedCloud ? "Save (Unsaved)" : "Save"}
+                </>
+              )}
             </button>
             <div className="h-6 w-px bg-slate-200 mx-1"></div>
             <button 
@@ -1465,6 +1677,31 @@ export default function App() {
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full flex flex-col gap-8">
         
+        {isQuotaExceeded && (
+          <div className="bg-amber-50/70 border border-amber-200/50 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs print:hidden animate-fade-in">
+            <div className="flex items-start gap-3">
+              <div className="p-2 bg-amber-100 text-amber-700 rounded-xl">
+                <AlertTriangle size={18} />
+              </div>
+              <div>
+                <h4 className="text-xs font-black text-amber-800 uppercase tracking-wider">Cloud Sync Quota Exceeded (Billing Limits)</h4>
+                <p className="text-[11px] text-slate-600 mt-0.5 leading-relaxed">
+                  Your team has exceeded Google Firestore's free write quota for today. <strong>No actions required:</strong> your data is safely persisted in your browser's local storage and will restore completely when you return!
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                setIsQuotaExceeded(false);
+                saveToCloud(false);
+              }}
+              className="bg-amber-500 hover:bg-amber-600 text-slate-900 font-bold px-4.5 py-2 text-xs rounded-xl transition duration-150 shrink-0 cursor-pointer shadow-subtle border border-amber-400/30"
+            >
+              Retry Cloud Sync
+            </button>
+          </div>
+        )}
+        
         {/* Project Selector Sidebar panel / info bar */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200/40 pb-5 print:hidden">
           <div className="flex items-center gap-3">
@@ -1483,12 +1720,44 @@ export default function App() {
             {projects.length > 1 && (
               <button
                 onClick={deleteCurrentProject}
-                className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg transition"
+                className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg transition text-xs font-semibold cursor-pointer"
                 title="Delete current comparison"
               >
                 <Trash2 size={16} />
               </button>
             )}
+          </div>
+
+          {/* Perspective View switcher */}
+          <div className="flex bg-slate-200/50 p-1.5 rounded-xl border border-slate-250/20 items-center gap-1 self-start md:self-auto shadow-2xs">
+            <button
+              onClick={() => {
+                setActivePerspective("matrix");
+                showToast("Switched to active comparison sheets");
+              }}
+              className={`flex items-center gap-1.5 px-4 py-2 text-xs font-extrabold rounded-lg transition-all duration-150 cursor-pointer ${
+                activePerspective === "matrix"
+                  ? "bg-white text-indigo-700 shadow-sm"
+                  : "text-slate-500 hover:text-slate-800 hover:bg-white/30"
+              }`}
+            >
+              <Layers size={13} />
+              Comparison Sheets
+            </button>
+            <button
+              onClick={() => {
+                setActivePerspective("vendor");
+                showToast("Switched to Side-by-Side Vendor Perspective");
+              }}
+              className={`flex items-center gap-1.5 px-4 py-2 text-xs font-extrabold rounded-lg transition-all duration-150 cursor-pointer ${
+                activePerspective === "vendor"
+                  ? "bg-white text-indigo-700 shadow-sm"
+                  : "text-slate-500 hover:text-slate-800 hover:bg-white/30"
+              }`}
+            >
+              <Award size={13} />
+              Vendor Perspective & KPIs
+            </button>
           </div>
 
           {importError && (
@@ -1561,7 +1830,7 @@ export default function App() {
                     onClick={() => startEditing("project-date", undefined, undefined, project.date)}
                     className="text-xs font-semibold text-slate-800 cursor-pointer hover:text-indigo-600 transition"
                   >
-                    {project.date}
+                    {formatDateDDMMYYYY(project.date)}
                   </span>
                 )}
               </div>
@@ -1714,8 +1983,9 @@ export default function App() {
                       <h4 className="text-2xl font-black text-slate-900 tracking-tight">
                         {briefing.cheapest.name}
                       </h4>
-                      <p className="text-xs text-emerald-800 font-medium mt-1">
+                      <p className="text-xs text-emerald-800 font-medium mt-1 flex flex-wrap items-center gap-1.5">
                         Grand Total {tcoYears}-Year TCO: <span className="font-extrabold text-slate-900 text-sm">{formatCurrency(briefing.cheapest.total)}</span>
+                        {showDualConversion(briefing.cheapest.total, "text-[11px] text-teal-700 font-bold font-mono tracking-wide drop-shadow-[0_1px_1px_rgba(255,255,255,0.85)]")}
                       </p>
                       <p className="text-xs text-slate-500 mt-2 italic leading-relaxed">
                         {briefing.comparisonText}
@@ -1818,8 +2088,247 @@ export default function App() {
           </div>
         </section>
 
-        {/* CORE SECTION 1: COST SEGMENT COMPARISONS (MAPPED CATEGORIES) */}
-        <section className="flex flex-col gap-10">
+        {activePerspective === "vendor" ? (
+          <section className="flex flex-col gap-8 animate-fade-in print:hidden">
+            {/* KPI Summary Dashboard panel */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 print:grid-cols-4">
+              
+              {/* Card 1: Value Pick */}
+              <div className="bg-emerald-50/45 border-l-4 border-emerald-500 rounded-r-xl p-4 flex flex-col justify-between shadow-2xs">
+                <div>
+                  <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider block">Financial Leader</span>
+                  <span className="text-xs font-semibold text-slate-400 block mt-1">Most Competitive Price</span>
+                  {cheapestVendor ? (
+                    <div className="mt-2">
+                      <span className="text-sm font-extrabold text-slate-900 block leading-tight truncate">{cheapestVendor.name}</span>
+                      <span className="text-sm font-bold text-emerald-800 block mt-1">{formatCurrency(cheapestVendor.total)}</span>
+                      {showDualConversion(cheapestVendor.total, "text-[10px] text-emerald-700 font-bold font-mono tracking-wide block mt-1")}
+                    </div>
+                  ) : (
+                    <span className="text-xs text-slate-500 block mt-2">No costs entered yet</span>
+                  )}
+                </div>
+                <div className="text-[9px] text-slate-400 mt-3 font-mono">Based on grand total {tcoYears}-Year TCO projection</div>
+              </div>
+
+              {/* Card 2: Quality Leader */}
+              <div className="bg-amber-50/45 border-l-4 border-[#d97706] rounded-r-xl p-4 flex flex-col justify-between shadow-2xs">
+                <div>
+                  <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider block">Quality Standard Frontrunner</span>
+                  <span className="text-xs font-semibold text-slate-400 block mt-1">Highest Scorecard Rating</span>
+                  {highestRatedVendor && highestRatedVendor.score > 0 ? (
+                    <div className="mt-2">
+                      <span className="text-sm font-extrabold text-slate-900 block leading-tight truncate">{highestRatedVendor.name}</span>
+                      <span className="text-sm font-bold text-[#d97706] block mt-1">★ {highestRatedVendor.score.toFixed(2)} / 5.0</span>
+                    </div>
+                  ) : (
+                    <span className="text-xs text-slate-500 block mt-2">No scores entered yet</span>
+                  )}
+                </div>
+                <div className="text-[9px] text-slate-400 mt-3 font-mono">Weighted score average across all categories</div>
+              </div>
+
+              {/* Card 3: Best Value Matching */}
+              <div className="bg-blue-50/45 border-l-4 border-blue-500 rounded-r-xl p-4 flex flex-col justify-between shadow-2xs">
+                <div>
+                  <span className="text-[10px] font-bold text-blue-800 uppercase tracking-wider block">Best Value Matching</span>
+                  <span className="text-xs font-semibold text-slate-400 block mt-1">Optimum Rating vs Cost Index</span>
+                  {bestValueVendor && bestValueVendor.score > 0 ? (
+                    <div className="mt-2">
+                      <span className="text-sm font-extrabold text-slate-900 block leading-tight truncate">{bestValueVendor.name}</span>
+                      <span className="text-[11px] font-semibold text-slate-505 block mt-0.5">Rating: {bestValueVendor.score.toFixed(1)}/5  |  TCO: {formatCurrency(bestValueVendor.total)}</span>
+                      {showDualConversion(bestValueVendor.total, "text-[10px] text-blue-700 font-bold font-mono tracking-wide block mt-1")}
+                    </div>
+                  ) : (
+                    <span className="text-xs text-slate-555 block mt-2">No scoring data yet</span>
+                  )}
+                </div>
+                <div className="text-[9px] text-slate-400 mt-3 font-mono">Computed ROI index based on performance metrics</div>
+              </div>
+
+              {/* Card 4: Baseline Benchmark Cost */}
+              <div className="bg-indigo-50/45 border-l-4 border-indigo-500 rounded-r-xl p-4 flex flex-col justify-between shadow-2xs">
+                <div>
+                  <span className="text-[10px] font-bold text-indigo-805 uppercase tracking-wider block">Average Baseline TCO</span>
+                  <span className="text-xs font-semibold text-slate-400 block mt-1">Market Benchmark Cost</span>
+                  <div className="mt-2">
+                    <span className="text-sm font-extrabold text-slate-900 block leading-tight truncate">{formatCurrency(avgProjectCost)}</span>
+                    {showDualConversion(avgProjectCost, "text-[11px] text-indigo-700 font-bold font-mono tracking-wide block mt-1")}
+                    <span className="text-xs font-semibold text-indigo-705 block mt-1.5">Across {activeTotalsList.length} compared suppliers</span>
+                  </div>
+                </div>
+                <div className="text-[9px] text-slate-400 mt-3 font-mono">TCO metric baseline across all configurations</div>
+              </div>
+
+            </div>
+
+            {/* Side-by-Side Supplier Detail Cards Grid */}
+            <div className={`grid gap-6 ${
+              project.vendors.length === 1 
+                ? "grid-cols-1 max-w-xl mx-auto" 
+                : project.vendors.length === 2 
+                  ? "grid-cols-1 md:grid-cols-2" 
+                  : "grid-cols-1 md:grid-cols-3"
+            }`}>
+              {project.vendors.map((v) => {
+                const totalTCO = getVendorGrandTotal(v.id);
+                const scoreAvg = getVendorScorecardAvg(v.id);
+                const isSelected = project.recommendedVendorId === v.id;
+                const isCheapestOpt = cheapestVendor && cheapestVendor.id === v.id && totalTCO > 0;
+                
+                return (
+                  <div 
+                    key={v.id} 
+                    className={`bg-white rounded-2xl border-2 transition-all duration-300 flex flex-col shadow-xs relative overflow-hidden ${
+                      isSelected 
+                        ? "border-[#d97706] ring-2 ring-amber-450/20 scale-[1.01] z-10 shadow-md" 
+                        : "border-slate-100 hover:border-slate-300"
+                    }`}
+                  >
+                    {/* Top Status Banner */}
+                    {isSelected && (
+                      <div className="bg-amber-450 text-slate-900 text-[10px] font-extrabold uppercase text-center py-1 tracking-widest leading-none select-none">
+                        ★ FINAL SELECTED PROCUREMENT OPTION ★
+                      </div>
+                    )}
+
+                    {/* Card Header Content */}
+                    <div className="p-5 border-b border-slate-100 flex flex-col gap-3 select-none">
+                      <div className="flex items-center justify-between gap-2">
+                        <h4 className="text-base font-black text-slate-900 truncate" title={v.name}>{v.name}</h4>
+                        
+                        <button
+                          onClick={() => recommendVendor(v.id)}
+                          className={`px-3 py-1 text-[10px] font-black rounded-lg transition-all duration-150 border cursor-pointer uppercase tracking-tight ${
+                            isSelected 
+                              ? "bg-amber-500 border-amber-500 text-slate-900 shadow-xs" 
+                              : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-slate-400"
+                          }`}
+                          title="Flag this supplier option as the final selected path"
+                        >
+                          {isSelected ? "✓ Selected" : "Select Option"}
+                        </button>
+                      </div>
+
+                      <div className="flex flex-col gap-0.5 mt-1 bg-slate-50 p-2.5 rounded-lg border border-slate-100/50">
+                        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block">Projected Year {tcoYears} TCO</span>
+                        <div className="flex items-baseline gap-1.5 mt-0.5">
+                          <span className="text-base font-black text-slate-900">{formatCurrency(totalTCO)}</span>
+                          {isCheapestOpt && (
+                            <span className="text-[8px] px-1.5 py-0.5 uppercase tracking-wider text-emerald-800 bg-emerald-100 rounded font-extrabold select-none">Best Price</span>
+                          )}
+                        </div>
+                        {showDualConversion(totalTCO, "text-[11px] font-bold text-slate-550 font-mono tracking-wide block leading-none mt-1")}
+                      </div>
+                    </div>
+
+                    {/* Card Body */}
+                    <div className="p-5 flex-1 flex flex-col gap-4 text-xs">
+                      
+                      {/* Scorecard average */}
+                      <div className="flex flex-col gap-1.5">
+                        <span className="text-[10px] font-bold text-slate-404 uppercase tracking-wider select-none">Evaluation Scorecard</span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-sm font-bold text-slate-900">{scoreAvg.toFixed(2)} / 5</span>
+                          <div className="flex text-amber-400">
+                            {Array.from({ length: 5 }).map((_, i) => (
+                              <span key={i} className="text-xs">
+                                {i < Math.round(scoreAvg) ? "★" : "☆"}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Checklist-like small breakdown */}
+                        <div className="grid grid-cols-2 gap-1.5 mt-1.5">
+                          {(project.criteria || [
+                            { id: "technical", name: "Technical Competency", description: "API robustness, ERP/Invoicing standard compatibility" },
+                            { id: "support", name: "SLA & Customer Support", description: "Response times, dedicated account rep, service coverage" },
+                            { id: "ease", name: "Implementation Ease", description: "Ready connectors, onboarding speed, developer docs" },
+                            { id: "value", name: "Business Integrity", description: "Vendor history, market share, financials viability" }
+                          ]).slice(0, 4).map((crit) => {
+                            const val = scorecards[project.id]?.[v.id]?.[crit.id] || 0;
+                            return (
+                              <div key={crit.id} className="flex justify-between items-center bg-slate-50/50 border border-slate-100 p-2 rounded-lg">
+                                <span className="text-[9px] font-medium text-slate-500 capitalize truncate max-w-[85px]" title={crit.name}>{crit.name}</span>
+                                <span className="font-mono text-[9px] font-bold text-slate-700">{val > 0 ? `${val}⭐` : "—"}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Plan Description details */}
+                      <div className="flex flex-col gap-1 border-t border-slate-100 pt-3 text-justify leading-relaxed">
+                        <span className="text-[9px] font-bold text-[#0369a1] uppercase tracking-wider">Plan Description</span>
+                        {project.vendorPlans?.[v.id] ? (
+                          <p className="text-slate-600 font-sans text-xs leading-normal">{project.vendorPlans[v.id]}</p>
+                        ) : (
+                          <span className="text-slate-400 italic text-[11px]">No specific plan parameters entered.</span>
+                        )}
+                      </div>
+
+                      {/* Payment milestones */}
+                      <div className="flex flex-col gap-1 border-t border-slate-100 pt-3 text-justify leading-relaxed">
+                        <span className="text-[9px] font-bold text-[#0369a1] uppercase tracking-wider">Payment schedule / milestones</span>
+                        {project.paymentMilestones?.[v.id] ? (
+                          <p className="text-slate-600 font-sans text-xs leading-normal">{project.paymentMilestones[v.id]}</p>
+                        ) : (
+                          <span className="text-slate-400 italic text-[11px]">No milestone terms entered.</span>
+                        )}
+                      </div>
+
+                      {/* Onboarding schedules */}
+                      <div className="flex flex-col gap-1 border-t border-slate-100 pt-3 text-justify leading-relaxed">
+                        <span className="text-[9px] font-bold text-[#0369a1] uppercase tracking-wider">Onboarding Lifecycle</span>
+                        {project.onboardingTimelines?.[v.id] ? (
+                          <p className="text-slate-600 font-sans text-xs leading-normal">{project.onboardingTimelines[v.id]}</p>
+                        ) : (
+                          <span className="text-slate-400 italic text-[11px]">No setup timeline entered.</span>
+                        )}
+                      </div>
+
+                      {/* Dossier proposal files */}
+                      <div className="flex flex-col gap-1.5 border-t border-slate-100 pt-3">
+                        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Linked Supplier Files</span>
+                        {getFilesForVendor(v.id).length > 0 ? (
+                          <div className="flex flex-col gap-1 mt-1">
+                            {getFilesForVendor(v.id).map((f) => (
+                              <div
+                                key={f.id}
+                                onClick={() => setActiveViewFile(f)}
+                                className="flex items-center gap-1.5 p-1.5 border border-slate-200 hover:border-cyan-300 rounded-lg hover:bg-cyan-50/10 cursor-pointer transition text-[11px] text-[#0e7490]"
+                              >
+                                <Paperclip size={11} className="text-cyan-600 font-bold" />
+                                <span className="underline truncate max-w-[200px] font-mono leading-none">{f.name}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-slate-400 italic text-[11px]">No specific contract proposal attachments.</span>
+                        )}
+                      </div>
+
+                      {/* General qualitative notes */}
+                      <div className="flex flex-col gap-1.5 border-t border-slate-100 pt-3">
+                        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Qualitative Supplier Commentary</span>
+                        {project.vendorNotes?.[v.id] ? (
+                          <p className="text-slate-600 font-sans text-xs leading-normal">{project.vendorNotes[v.id]}</p>
+                        ) : (
+                          <span className="text-slate-400 italic text-[11px]">No notes declared yet. Double-click in Standard table component to add segment logs or annotations.</span>
+                        )}
+                      </div>
+
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        ) : (
+          <>
+            {/* CORE SECTION 1: COST SEGMENT COMPARISONS (MAPPED CATEGORIES) */}
+            <section className="flex flex-col gap-10">
           <div className="flex items-center justify-between border-b border-slate-200 pb-3 flex-wrap gap-2">
             <div className="flex items-center gap-3">
               <h3 className="text-base font-bold text-slate-900 tracking-tight flex items-center gap-2">
@@ -2048,6 +2557,7 @@ export default function App() {
                                               className="text-right w-24 bg-transparent border-b border-transparent hover:border-slate-200 focus:border-indigo-500 focus:bg-indigo-50/20 focus:text-slate-900 rounded-sm font-bold antialiased py-0.5 px-1 focus:ring-1 focus:ring-indigo-150 focus:outline-hidden transition-all duration-150 select-all"
                                             />
                                           </div>
+                                          {showDualConversion(rawVal)}
 
                                           {/* Scaled TCO indicator for annual/recurring components */}
                                           {factor !== 1 && (
@@ -2114,6 +2624,7 @@ export default function App() {
                                     <td key={vendor.id} className="px-4 py-3 text-right font-mono text-sm font-black text-slate-900 border-b-2 border-double border-slate-300">
                                       <div className="flex flex-col items-end justify-center">
                                         <span>{formatCurrency(catTotal)}</span>
+                                        {showDualConversion(catTotal)}
                                         {project.vendors.length > 1 && totalAvg > 0 && (() => {
                                           const diffPercent = ((catTotal - totalAvg) / totalAvg) * 100;
                                           if (Math.abs(diffPercent) < 0.1) {
@@ -2423,6 +2934,7 @@ export default function App() {
                                                 className="text-right w-24 bg-transparent border-b border-transparent hover:border-slate-200 focus:border-indigo-500 focus:bg-indigo-50/20 focus:text-slate-900 rounded-sm font-bold antialiased py-0.5 px-1 focus:ring-1 focus:ring-indigo-150 focus:outline-hidden transition-all duration-150 select-all"
                                               />
                                             </div>
+                                            {showDualConversion(rawVal)}
 
                                             {/* Scaled TCO indicator for annual/recurring components */}
                                             {factor !== 1 && (
@@ -2462,6 +2974,7 @@ export default function App() {
                                     <td className="px-4 py-3 text-right font-mono text-sm font-black text-slate-900">
                                       <div className="flex flex-col items-end justify-center">
                                         <span>{formatCurrency(catTotal)}</span>
+                                        {showDualConversion(catTotal)}
                                         {project.vendors.length > 1 && totalAvg > 0 && (() => {
                                           const diffPercent = ((catTotal - totalAvg) / totalAvg) * 100;
                                           if (Math.abs(diffPercent) < 0.1) {
@@ -2514,7 +3027,10 @@ export default function App() {
                                   const averagePrice = compPrices.length > 0 ? compPrices.reduce((a, b) => a + b, 0) / compPrices.length : 0;
                                   return (
                                     <td key={comp.id} className="px-4 py-3 text-right font-mono text-xs text-slate-600 font-bold border-b-2 border-double border-slate-300">
-                                      {formatCurrency(averagePrice)}
+                                      <div className="flex flex-col items-end justify-center">
+                                        <span>{formatCurrency(averagePrice)}</span>
+                                        {showDualConversion(averagePrice)}
+                                      </div>
                                     </td>
                                   );
                                 })}
@@ -2565,6 +3081,148 @@ export default function App() {
                 </div>
               );
             })}
+
+            {/* QUALITATIVE PARAMETERS MATRIX (Plan, Milestones, Onboarding) */}
+            <div className="border border-[#c0e6ee] rounded-3xl bg-[#f0f9fa]/50 backdrop-blur-md shadow-sm overflow-hidden mt-4 p-6 md:p-8 flex flex-col gap-6">
+              <div>
+                <h4 className="text-xs font-extrabold text-[#0e7490] uppercase tracking-widest flex items-center gap-2">
+                  <FileText size={14} className="text-[#0e7490]" /> Supplying Parameters & Qualitative Milestones
+                </h4>
+                <p className="text-xs text-slate-500 mt-1">Provide license specifics, incremental payout installments, and transition expectations for each tender supplier.</p>
+              </div>
+
+              <div className="overflow-x-auto rounded-2xl border border-[#bfe2ea] bg-white shadow-3xs">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-[#e4f3f6] border-b border-[#bfe2ea] text-slate-800 text-[11px] font-bold tracking-wider">
+                      <th className="px-5 py-3.5 w-60 font-extrabold uppercase text-[#0e7490] select-none">Qualitative Parameter</th>
+                      {project.vendors.map((v) => (
+                        <th key={v.id} className="px-5 py-3.5 font-extrabold uppercase text-slate-800 min-w-[250px]">{v.name}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {/* Plan/Model row */}
+                    <tr className="hover:bg-slate-50/50 transition">
+                      <td className="px-5 py-4 text-xs font-bold text-slate-705">
+                        <span className="font-extrabold text-[#0369a1] block">Plan / Model Description</span>
+                        <span className="text-[10px] text-slate-400 font-medium block mt-0.5 leading-normal">Software tier details, seat allotments, licenses, or specific server models.</span>
+                      </td>
+                      {project.vendors.map((v) => {
+                        const value = project.vendorPlans?.[v.id] || "";
+                        return (
+                          <td key={v.id} className="px-5 py-4">
+                            <div className="relative group/field flex flex-col items-stretch">
+                              <textarea
+                                rows={3}
+                                placeholder="Describe plan (e.g., Premium, SaaS)..."
+                                value={value}
+                                onChange={(e) => handleVendorPlanChange(v.id, e.target.value)}
+                                className="w-full text-xs bg-slate-50 border border-slate-250 focus:bg-white focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 rounded-xl p-3 resize-y leading-relaxed text-left font-sans transition-all"
+                              />
+                              {value && (
+                                <button
+                                  onClick={() => {
+                                    setConfirmDialog({
+                                      title: "Clear Plan Description",
+                                      message: `Are you sure you want to delete the plan details for ${v.name}?`,
+                                      onConfirm: () => handleVendorPlanChange(v.id, "")
+                                    });
+                                  }}
+                                  className="absolute top-2 right-2 opacity-0 group-hover/field:opacity-100 p-1.5 text-slate-400 hover:text-rose-500 bg-white shadow-xs rounded-lg border border-slate-150 transition cursor-pointer"
+                                  title="Clear description"
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        );
+                      })}
+                    </tr>
+
+                    {/* Milestone terms row */}
+                    <tr className="hover:bg-slate-50/50 transition">
+                      <td className="px-5 py-4 text-xs font-bold text-slate-705">
+                        <span className="font-extrabold text-[#0369a1] block">Payment Milestones</span>
+                        <span className="text-[10px] text-slate-400 font-medium block mt-0.5 leading-normal">Incremental payout milestones (e.g., 30% advance, progress payments, or final acceptance).</span>
+                      </td>
+                      {project.vendors.map((v) => {
+                        const value = project.paymentMilestones?.[v.id] || "";
+                        return (
+                          <td key={v.id} className="px-5 py-4">
+                            <div className="relative group/field flex flex-col items-stretch">
+                              <textarea
+                                rows={3}
+                                placeholder="Milestones (e.g., 30% upfront)..."
+                                value={value}
+                                onChange={(e) => handlePaymentMilestonesChange(v.id, e.target.value)}
+                                className="w-full text-xs bg-slate-50 border border-slate-250 focus:bg-white focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 rounded-xl p-3 resize-y leading-relaxed text-left font-sans transition-all"
+                              />
+                              {value && (
+                                <button
+                                  onClick={() => {
+                                    setConfirmDialog({
+                                      title: "Clear Payment Terms",
+                                      message: `Are you sure you want to delete payment milestones for ${v.name}?`,
+                                      onConfirm: () => handlePaymentMilestonesChange(v.id, "")
+                                    });
+                                  }}
+                                  className="absolute top-2 right-2 opacity-0 group-hover/field:opacity-100 p-1.5 text-slate-400 hover:text-rose-500 bg-white shadow-xs rounded-lg border border-slate-150 transition cursor-pointer"
+                                  title="Clear milestones"
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        );
+                      })}
+                    </tr>
+
+                    {/* Onboarding Timeline row */}
+                    <tr className="hover:bg-slate-50/50 transition">
+                      <td className="px-5 py-4 text-xs font-bold text-slate-705">
+                        <span className="font-extrabold text-[#0369a1] block">Onboarding Timeline</span>
+                        <span className="text-[10px] text-slate-400 font-medium block mt-0.5 leading-normal">Estimated system setup, cloud migration, key training schedules.</span>
+                      </td>
+                      {project.vendors.map((v) => {
+                        const value = project.onboardingTimelines?.[v.id] || "";
+                        return (
+                          <td key={v.id} className="px-5 py-4">
+                            <div className="relative group/field flex flex-col items-stretch">
+                              <textarea
+                                rows={3}
+                                placeholder="Setup timeline (e.g., 6 weeks total)..."
+                                value={value}
+                                onChange={(e) => handleOnboardingTimelineChange(v.id, e.target.value)}
+                                className="w-full text-xs bg-slate-50 border border-slate-250 focus:bg-white focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 rounded-xl p-3 resize-y leading-relaxed text-left font-sans transition-all"
+                              />
+                              {value && (
+                                <button
+                                  onClick={() => {
+                                    setConfirmDialog({
+                                      title: "Clear Onboarding Timeline",
+                                      message: `Are you sure you want to delete onboarding timeline for ${v.name}?`,
+                                      onConfirm: () => handleOnboardingTimelineChange(v.id, "")
+                                    });
+                                  }}
+                                  className="absolute top-2 right-2 opacity-0 group-hover/field:opacity-100 p-1.5 text-slate-400 hover:text-rose-500 bg-white shadow-xs rounded-lg border border-slate-150 transition cursor-pointer"
+                                  title="Clear timeline"
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        );
+                      })}
+                    </tr>
+
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -2626,7 +3284,10 @@ export default function App() {
                               {total === 0 ? (
                                 <span className="text-slate-450 select-none print:text-slate-450">—</span>
                               ) : (
-                                <span className="font-semibold text-slate-900">{formatCurrency(total)}</span>
+                                <>
+                                  <span className="font-semibold text-slate-900">{formatCurrency(total)}</span>
+                                  {showDualConversion(total)}
+                                </>
                               )}
                               
                               {project.vendors.length > 1 && avgTotal > 0 && total > 0 && (() => {
@@ -2715,6 +3376,7 @@ export default function App() {
                             <span className={`font-mono text-base font-black antialiased ${isCheapest ? "text-emerald-700 print:text-emerald-800" : "text-slate-800 print:text-slate-900"}`}>
                               {formatCurrency(grandTotalVal)}
                             </span>
+                            {showDualConversion(grandTotalVal, "text-xs text-teal-850 font-bold font-mono drop-shadow-[0_1px_1px_rgba(255,255,255,0.85)] leading-tight mt-0.5 select-none text-right block")}
                             
                             {project.vendors.length > 1 && grandAvg > 0 && grandTotalVal > 0 && (() => {
                               if (Math.abs(diffPercent) < 0.1) {
@@ -2768,6 +3430,8 @@ export default function App() {
 
           </div>
         </section>
+      </>
+    )}
 
         {/* Quotes & General File Attachment Vault at bottom */}
         <section className="bg-[#f0f7ff]/75 backdrop-blur-xl rounded-2xl border border-blue-200/40 p-6 md:p-8 shadow-xl flex flex-col gap-6 print:hidden mt-8">
@@ -2872,8 +3536,6 @@ export default function App() {
           <p>© 2026 Vortex Offshore</p>
           <div className="flex gap-4">
             <a href="#" onClick={(e) => { e.preventDefault(); window.print(); }} className="hover:text-indigo-600 transition font-medium">Print to PDF</a>
-            <span className="text-slate-200">|</span>
-            <a href="#" onClick={(e) => { e.preventDefault(); resetToSample(); }} className="hover:text-indigo-600 transition font-medium">Load Initial Template</a>
           </div>
         </div>
       </footer>

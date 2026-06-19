@@ -1,5 +1,5 @@
 import { initializeApp } from "firebase/app";
-import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
+import { getFirestore, doc, getDoc, setDoc, setLogLevel } from "firebase/firestore";
 import firebaseConfig from "./firebase-applet-config.json";
 
 // Verify if the config has been populated with valid keys
@@ -17,6 +17,13 @@ if (isFirebaseConfigured) {
     appInstance = initializeApp(firebaseConfig);
     const dbId = (firebaseConfig as any).firestoreDatabaseId || "(default)";
     firestoreInstance = getFirestore(appInstance, dbId);
+    
+    // Silence internal Firestore warning logs if they are throwing quota-exhausted loop warnings
+    try {
+      setLogLevel("silent");
+    } catch (logErr) {
+      console.warn("Failed to set Firestore log level:", logErr);
+    }
     
     // Quick validation log
     console.log("Firebase initialized successfully with project ID:", firebaseConfig.projectId, "and DB:", dbId);

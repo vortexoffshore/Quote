@@ -49,4 +49,8 @@ export interface QuoteProject {
   uploadedFiles?: UploadedFile[];
   tcoYears?: 1 | 2 | 3;
   transposeMatrix?: boolean;
+  vendorPlans?: Record<string, string>;
+  paymentMilestones?: Record<string, string>;
+  onboardingTimelines?: Record<string, string>;
+  recommendedVendorId?: string;
 }
