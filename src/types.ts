@@ -53,4 +53,5 @@ export interface QuoteProject {
   paymentMilestones?: Record<string, string>;
   onboardingTimelines?: Record<string, string>;
   recommendedVendorId?: string;
+  excludedCostComponents?: Record<string, boolean>;
 }

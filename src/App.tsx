@@ -59,6 +59,8 @@ export default function App() {
     return projects[0]?.id || "project-1";
   });
 
+  const [showGrandTotalBreakdown, setShowGrandTotalBreakdown] = useState<boolean>(true);
+
   const [isSyncing, setIsSyncing] = useState(false);
   const [isUnsavedCloud, setIsUnsavedCloud] = useState(false);
   
@@ -589,20 +591,83 @@ export default function App() {
     return Number((sum / count).toFixed(1));
   };
 
-  const getCategoryTotalForVendor = (catId: string, venId: string): number => {
+  const isComponentExcluded = (catId: string, compId: string): boolean => {
+    return !!(project.excludedCostComponents?.[`${catId}-${compId}`]);
+  };
+
+  const toggleCostComponentIncluded = (catId: string, compId: string) => {
+    const currentExcluded = project.excludedCostComponents || {};
+    const key = `${catId}-${compId}`;
+    const updatedExcluded = {
+      ...currentExcluded,
+      [key]: !currentExcluded[key]
+    };
+
+    const updatedProjects = projects.map((p) => {
+      if (p.id === project.id) {
+        return {
+          ...p,
+          excludedCostComponents: updatedExcluded
+        };
+      }
+      return p;
+    });
+    setProjects(updatedProjects);
+    setIsUnsavedCloud(true);
+  };
+
+  // Helper to calculate cost breakdown for a category / vendor
+  const getCategoryTotalBreakdown = (catId: string, venId: string) => {
     const category = project.categories.find(c => c.id === catId);
-    if (!category) return 0;
-    return category.components.reduce((sum, comp) => {
+    if (!category) return { oneTime: 0, recurring: 0 };
+    
+    let oneTime = 0;
+    let recurring = 0;
+    
+    category.components.forEach(comp => {
+      if (isComponentExcluded(catId, comp.id)) return;
       const val = project.costValues[catId]?.[comp.id]?.[venId] || 0;
       const factor = getComponentScaleFactor(comp.name, comp.id, tcoYears, category.components);
-      return sum + (val * factor);
-    }, 0);
+      
+      const isAnnual = comp.name.toLowerCase().includes("annual") || 
+                        comp.name.toLowerCase().includes("recurring") || 
+                        comp.name.toLowerCase().includes("yearly") || 
+                        comp.name.toLowerCase().includes("subscription") ||
+                        comp.name.toLowerCase().includes("per year") ||
+                        comp.id.toLowerCase().includes("annual") ||
+                        comp.id.toLowerCase().includes("recurring") ||
+                        comp.id.toLowerCase().includes("subscription");
+
+      if (isAnnual || factor > 1) {
+        recurring += val * factor;
+      } else {
+        oneTime += val * factor;
+      }
+    });
+    
+    return { oneTime, recurring };
+  };
+
+  // Helper to calculate cost breakdown globally for a vendor
+  const getVendorGrandTotalBreakdown = (venId: string) => {
+    let oneTime = 0;
+    let recurring = 0;
+    project.categories.forEach(cat => {
+      const b = getCategoryTotalBreakdown(cat.id, venId);
+      oneTime += b.oneTime;
+      recurring += b.recurring;
+    });
+    return { oneTime, recurring };
+  };
+
+  const getCategoryTotalForVendor = (catId: string, venId: string): number => {
+    const b = getCategoryTotalBreakdown(catId, venId);
+    return b.oneTime + b.recurring;
   };
 
   const getVendorGrandTotal = (venId: string): number => {
-    return project.categories.reduce((sum, cat) => {
-      return sum + getCategoryTotalForVendor(cat.id, venId);
-    }, 0);
+    const b = getVendorGrandTotalBreakdown(venId);
+    return b.oneTime + b.recurring;
   };
 
   // Find cheapest vendor based on financial GRAND TOTAL TCO
@@ -1649,27 +1714,6 @@ export default function App() {
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full flex flex-col gap-8">
         
-        {/* Cloud Sync Status Alert Bar */}
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-3xs print:hidden animate-fade-in">
-          <div className="flex items-start gap-2.5">
-            <div className="p-1.5 bg-amber-100 text-amber-700 rounded-lg mt-0.5">
-              <AlertTriangle size={16} />
-            </div>
-            <div>
-              <h4 className="text-[11px] font-bold text-amber-900 uppercase tracking-wider">Database Status: Local Fallback</h4>
-              <p className="text-xs font-bold text-amber-800 mt-1">
-                Your team has exceeded Google Firestore's free write quota for today.
-              </p>
-              <p className="text-[11px] text-slate-600 mt-0.5 leading-relaxed">
-                Cloud automatic synchronization is temporarily paused. <strong>No actions required:</strong> all adjustments, projects, and comparison updates are safely saved on your computer first!
-              </p>
-            </div>
-          </div>
-          <div className="xs:self-end sm:self-auto px-2 py-0.5 bg-amber-100 rounded text-[9px] text-amber-800 font-bold uppercase tracking-wider select-none">
-            Offline Saved
-          </div>
-        </div>
-        
         {/* Project Selector Sidebar panel / info bar */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200/40 pb-5 print:hidden">
           <div className="flex items-center gap-3">
@@ -1940,28 +1984,63 @@ export default function App() {
             <div className="lg:col-span-5 flex flex-col gap-4">
               
               {/* Card 1: Cheapest option highlighted */}
-              <div className="bg-emerald-50/40 backdrop-blur-md border border-emerald-200/50 rounded-xl p-5 flex flex-col gap-2 shadow-xs h-full justify-between">
+              <div className="bg-emerald-50/40 backdrop-blur-md border border-emerald-200/50 rounded-xl p-5 flex flex-col gap-3 shadow-xs h-full justify-between">
                 <div className="flex flex-col gap-2">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between border-b border-emerald-200/30 pb-2">
                     <span className="text-[11px] font-extrabold uppercase tracking-widest text-emerald-700">Financial Value Pick</span>
                     <Award size={16} className="text-emerald-600" />
                   </div>
                   {briefing && briefing.cheapest.total > 0 ? (
-                    <div>
-                      <h4 className="text-2xl font-black text-slate-900 tracking-tight">
-                        {briefing.cheapest.name}
+                    <div className="flex flex-col gap-2">
+                      <h4 className="text-lg font-black text-slate-900 tracking-tight">
+                        ✨ {briefing.cheapest.name} 
                       </h4>
-                      <p className="text-xs text-emerald-800 font-medium mt-1 flex flex-wrap items-center gap-1.5">
-                        Grand Total {tcoYears}-Year TCO: <span className="font-extrabold text-slate-900 text-sm">{formatCurrency(briefing.cheapest.total)}</span>
-                        {showDualConversion(briefing.cheapest.total, "text-[11px] text-teal-700 font-bold font-mono tracking-wide drop-shadow-[0_1px_1px_rgba(255,255,255,0.85)]")}
-                      </p>
-                      <p className="text-xs text-slate-500 mt-2 italic leading-relaxed">
+                      <p className="text-[11px] text-slate-500 italic leading-relaxed">
                         {briefing.comparisonText}
                       </p>
+
+                      {/* Cost Components split one-by-one */}
+                      <div className="mt-2 border-t border-emerald-200/30 pt-2.5 flex flex-col gap-1.5 max-h-[190px] overflow-y-auto pr-1">
+                        <span className="text-[9px] font-extrabold uppercase tracking-widest text-emerald-800/80 mb-0.5 block">Components Breakdown:</span>
+                        {project.categories.flatMap(cat => 
+                          cat.components.map(comp => {
+                            const isExcluded = isComponentExcluded(cat.id, comp.id);
+                            if (isExcluded) return null;
+                            
+                            const rawVal = project.costValues[cat.id]?.[comp.id]?.[briefing.cheapest.id] ?? 0;
+                            const factor = getComponentScaleFactor(comp.name, comp.id, tcoYears, cat.components);
+                            const scaledVal = rawVal * factor;
+                            if (scaledVal === 0) return null;
+
+                            const lowerName = comp.name.toLowerCase();
+                            const isOneTime = lowerName.includes("one-time") || lowerName.includes("onetime") || lowerName.includes("setup") || lowerName.includes("initial") || factor === 1;
+
+                            return (
+                              <div key={comp.id} className="flex items-center justify-between text-[11px] font-medium leading-none py-1 border-b border-emerald-100/40">
+                                <span className="text-slate-700 truncate max-w-[150px]" title={`${cat.name} > ${comp.name}`}>
+                                  {comp.name}
+                                </span>
+                                <span className="text-slate-800 font-mono font-bold shrink-0">
+                                  {formatCurrency(scaledVal)} <span className="text-[9px] text-slate-400 font-normal">({isOneTime ? "one-time" : "recurring"})</span>
+                                </span>
+                              </div>
+                            );
+                          })
+                        ).filter(Boolean)}
+                      </div>
+
+                      {/* Small font Grand Total footer per instructions */}
+                      <div className="mt-3 border-t-2 border-double border-emerald-200 pt-2.5 flex items-center justify-between">
+                        <span className="text-[10px] font-black text-slate-650 uppercase tracking-widest">TCO Total</span>
+                        <div className="flex flex-col items-end">
+                          <span className="font-mono text-sm font-extrabold text-emerald-800">{formatCurrency(briefing.cheapest.total)}</span>
+                          {showDualConversion(briefing.cheapest.total, "text-[9px] text-[#047857] font-bold font-mono")}
+                        </div>
+                      </div>
                     </div>
                   ) : (
                     <div>
-                      <h4 className="text-sm font-semibold text-slate-600">No costs entered yet</h4>
+                      <h4 className="text-sm font-semibold text-slate-400 italic">No costs entered yet</h4>
                       <p className="text-xs text-slate-400 mt-1">Populate components below to trigger dynamic comparison rankings.</p>
                     </div>
                   )}
@@ -2447,52 +2526,73 @@ export default function App() {
                             </thead>
 
                             <tbody className="divide-y divide-slate-150 bg-white">
-                              {cat.components.map((comp, compIdx) => (
-                                <tr 
-                                  key={comp.id} 
-                                  className={`group/row hover:bg-slate-50/50 transition ${
-                                    draggedComponentInfo?.catId === cat.id && draggedComponentInfo?.compIndex === compIdx 
-                                      ? "opacity-35 bg-indigo-50/30 border-l-2 border-indigo-500" 
-                                      : ""
-                                  }`}
-                                  onDragOver={(e) => handleComponentDragOver(e)}
-                                  onDrop={(e) => handleComponentDrop(e, cat.id, compIdx)}
-                                >
-                                  
-                                  {/* Component label */}
-                                  <td className="px-4 py-3 text-sm font-medium text-slate-800">
-                                    <div className="flex items-center gap-1.5 group/grip">
-                                      {/* Drag Handle for Component Row */}
-                                      <div
-                                        draggable
-                                        onDragStart={(e) => handleComponentDragStart(e, cat.id, compIdx)}
-                                        className="p-0.5 cursor-grab text-slate-300 hover:text-indigo-600 hover:bg-slate-50 rounded opacity-0 group-hover/row:opacity-100 transition duration-150 print:hidden shrink-0 flex items-center justify-center"
-                                        title="Drag to reorder component row"
-                                      >
-                                        <GripVertical size={13} />
-                                      </div>
-
-                                      {editingField.type === "component-name" && editingField.id === cat.id && editingField.subId === comp.id ? (
-                                        <input
-                                          type="text"
-                                          value={editValue}
-                                          onChange={(e) => setEditValue(e.target.value)}
-                                          onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
-                                          onBlur={saveInlineEdit}
-                                          autoFocus
-                                          className="text-xs font-bold text-slate-900 border-b border-indigo-500 bg-white focus:outline-hidden"
-                                        />
-                                      ) : (
-                                        <span 
-                                          onClick={() => startEditing("component-name", cat.id, comp.id, comp.name)}
-                                          className="cursor-pointer hover:text-indigo-600 hover:font-semibold"
-                                          title="Click to rename"
+                              {cat.components.map((comp, compIdx) => {
+                                const isExcluded = isComponentExcluded(cat.id, comp.id);
+                                return (
+                                  <tr 
+                                    key={comp.id} 
+                                    className={`group/row hover:bg-slate-50/50 transition ${
+                                      draggedComponentInfo?.catId === cat.id && draggedComponentInfo?.compIndex === compIdx 
+                                        ? "opacity-35 bg-indigo-50/30 border-l-2 border-indigo-500" 
+                                        : ""
+                                    } ${isExcluded ? "bg-slate-50/55" : ""}`}
+                                    onDragOver={(e) => handleComponentDragOver(e)}
+                                    onDrop={(e) => handleComponentDrop(e, cat.id, compIdx)}
+                                  >
+                                    
+                                    {/* Component label */}
+                                    <td className="px-4 py-3 text-sm font-medium text-slate-800">
+                                      <div className="flex items-center gap-2 group/grip">
+                                        {/* Drag Handle for Component Row */}
+                                        <div
+                                          draggable
+                                          onDragStart={(e) => handleComponentDragStart(e, cat.id, compIdx)}
+                                          className="p-0.5 cursor-grab text-slate-300 hover:text-indigo-600 hover:bg-slate-50 rounded opacity-0 group-hover/row:opacity-100 transition duration-150 print:hidden shrink-0 flex items-center justify-center"
+                                          title="Drag to reorder component row"
                                         >
-                                          {comp.name}
-                                        </span>
-                                      )}
-                                    </div>
-                                  </td>
+                                          <GripVertical size={13} />
+                                        </div>
+
+                                        {/* Include/Exclude Toggle Button */}
+                                        <button
+                                          onClick={() => toggleCostComponentIncluded(cat.id, comp.id)}
+                                          className={`p-1 rounded transition duration-150 print:hidden shrink-0 flex items-center justify-center cursor-pointer ${
+                                            isExcluded
+                                              ? "text-slate-300 hover:text-emerald-600 hover:bg-emerald-50 bg-slate-100/60"
+                                              : "text-emerald-600 hover:text-rose-600 hover:bg-rose-50 bg-emerald-50/40"
+                                          }`}
+                                          title={isExcluded ? "Currently excluded. Click to include in TCO totals" : "Currently included. Click to exclude from TCO totals"}
+                                        >
+                                          {isExcluded ? (
+                                            <X size={11} className="stroke-[3px]" />
+                                          ) : (
+                                            <Check size={11} className="stroke-[3px]" />
+                                          )}
+                                        </button>
+  
+                                        {editingField.type === "component-name" && editingField.id === cat.id && editingField.subId === comp.id ? (
+                                          <input
+                                            type="text"
+                                            value={editValue}
+                                            onChange={(e) => setEditValue(e.target.value)}
+                                            onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
+                                            onBlur={saveInlineEdit}
+                                            autoFocus
+                                            className="text-xs font-bold text-slate-900 border-b border-indigo-500 bg-white focus:outline-hidden"
+                                          />
+                                        ) : (
+                                          <span 
+                                            onClick={() => startEditing("component-name", cat.id, comp.id, comp.name)}
+                                            className={`cursor-pointer hover:text-indigo-600 hover:font-semibold transition-all duration-150 ${
+                                              isExcluded ? "text-slate-400 line-through italic" : "text-slate-800"
+                                            }`}
+                                            title="Click to rename"
+                                          >
+                                            {comp.name}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </td>
 
                                   {/* Input cell for each vendor column */}
                                   {project.vendors.map((vendor) => {
@@ -2507,14 +2607,15 @@ export default function App() {
                                     
                                     return (
                                       <td key={vendor.id} className="px-4 py-3 text-right">
-                                        <div className="flex flex-col items-end justify-center">
-                                          <div className="flex items-center justify-end font-mono text-sm antialiased text-slate-800">
-                                            <span className="text-xs text-slate-400 font-semibold mr-0.5 select-none">
+                                        <div className={`flex flex-col items-end justify-center ${isExcluded ? "opacity-45" : ""}`}>
+                                          <div className="flex items-center justify-end font-mono text-sm antialiased">
+                                            <span className={`text-xs font-semibold mr-0.5 select-none ${isExcluded ? "text-slate-350" : "text-slate-400"}`}>
                                               {CURRENCY_SYMBOLS[project.currency] || "$"}
                                             </span>
                                             <input
                                               type="text"
                                               defaultValue={rawVal === 0 ? "0" : rawVal.toString()}
+                                              disabled={isExcluded}
                                               key={`${project.id}-${cat.id}-${comp.id}-${vendor.id}-${rawVal}`} // Key forces re-render if reset triggered
                                               onBlur={(e) => handleCellChange(cat.id, comp.id, vendor.id, e.target.value)}
                                               onKeyDown={(e) => {
@@ -2522,20 +2623,28 @@ export default function App() {
                                                   e.currentTarget.blur();
                                                 }
                                               }}
-                                              className="text-right w-24 bg-transparent border-b border-transparent hover:border-slate-200 focus:border-indigo-500 focus:bg-indigo-50/20 focus:text-slate-900 rounded-sm font-bold antialiased py-0.5 px-1 focus:ring-1 focus:ring-indigo-150 focus:outline-hidden transition-all duration-150 select-all"
+                                              className={`text-right w-24 bg-transparent border-b border-transparent hover:border-slate-200 focus:border-indigo-500 focus:bg-indigo-50/20 focus:text-slate-900 rounded-sm font-bold antialiased py-0.5 px-1 focus:ring-1 focus:ring-indigo-150 focus:outline-hidden transition-all duration-150 select-all ${
+                                                isExcluded ? "text-slate-400 line-through italic cursor-not-allowed" : "text-slate-800"
+                                              }`}
                                             />
                                           </div>
                                           {showDualConversion(rawVal)}
-
+ 
                                           {/* Scaled TCO indicator for annual/recurring components */}
-                                          {factor !== 1 && (
-                                            <span className={`text-[10px] font-bold font-mono mt-0.5 select-none ${factor === 0 ? "text-slate-400 italic" : "text-indigo-600 bg-indigo-50/50 px-1 py-0.5 rounded-sm scale-95"}`}>
-                                              {factor === 0 ? `Excluded from ${tcoYears}-Yr TCO` : `TCO: ${formatCurrency(scaledVal)} (${factor}x)`}
+                                          {isExcluded ? (
+                                            <span className="text-[10px] font-bold font-mono mt-0.5 text-slate-400 bg-slate-100 rounded px-1.5 py-0.5 select-none scale-95 italic">
+                                              Excluded
                                             </span>
+                                          ) : (
+                                            factor !== 1 && (
+                                              <span className={`text-[10px] font-bold font-mono mt-0.5 select-none ${factor === 0 ? "text-slate-400 italic" : "text-indigo-600 bg-indigo-50/50 px-1 py-0.5 rounded-sm scale-95"}`}>
+                                                {factor === 0 ? `Excluded from ${tcoYears}-Yr TCO` : `TCO: ${formatCurrency(scaledVal)} (${factor}x)`}
+                                              </span>
+                                            )
                                           )}
-
+ 
                                           {/* Variance indicator relative to specific row average cost */}
-                                          {project.vendors.length > 1 && compAvg > 0 && (() => {
+                                          {!isExcluded && project.vendors.length > 1 && compAvg > 0 && (() => {
                                             const diffPercent = ((scaledVal - compAvg) / compAvg) * 100;
                                             if (Math.abs(diffPercent) < 0.1) {
                                               return (
@@ -2572,7 +2681,8 @@ export default function App() {
                                     </button>
                                   </td>
                                 </tr>
-                              ))}
+                              );
+                            })}
 
                               {/* Section Category SUM Total row */}
                               <tr className="bg-slate-50/40 font-bold border-t border-slate-200">
@@ -2592,12 +2702,20 @@ export default function App() {
                                     <td key={vendor.id} className="px-4 py-3 text-right font-mono text-sm font-black text-slate-900 border-b-2 border-double border-slate-300">
                                       <div className="flex flex-col items-end justify-center">
                                         <span>{formatCurrency(catTotal)}</span>
+                                        {catTotal > 0 && (() => {
+                                          const breakdown = getCategoryTotalBreakdown(cat.id, vendor.id);
+                                          return (
+                                            <span className="text-[9.5px] text-slate-500 font-sans tracking-tight mt-1 leading-tight text-right block font-semibold">
+                                              {formatCurrency(breakdown.oneTime)} <span className="text-slate-400 font-normal">one-time</span> + {formatCurrency(breakdown.recurring)} <span className="text-slate-400 font-normal">recurring</span>
+                                            </span>
+                                          );
+                                        })()}
                                         {showDualConversion(catTotal)}
                                         {project.vendors.length > 1 && totalAvg > 0 && (() => {
                                           const diffPercent = ((catTotal - totalAvg) / totalAvg) * 100;
                                           if (Math.abs(diffPercent) < 0.1) {
                                             return (
-                                              <span className="text-[9px] text-slate-400 font-mono select-none font-normal leading-none mt-0.5 opacity-50">
+                                              <span className="text-[9px] text-slate-400 font-mono select-none font-normal leading-none mt-1 opacity-50">
                                                 average
                                               </span>
                                             );
@@ -2605,7 +2723,7 @@ export default function App() {
                                           const isHigher = diffPercent > 0;
                                           return (
                                             <span 
-                                              className={`text-[9px] font-mono select-none leading-none mt-1 flex items-center gap-0.5 ${
+                                              className={`text-[9px] font-mono select-none leading-none mt-1.5 flex items-center gap-0.5 ${
                                                 isHigher ? "text-rose-500 font-bold" : "text-emerald-600 font-black"
                                               }`}
                                               title={`${isHigher ? "Higher" : "Lower"} than category sum average by ${Math.abs(diffPercent).toFixed(1)}%`}
@@ -2707,60 +2825,82 @@ export default function App() {
                                 <th scope="col" className="px-4 py-3.5 text-left text-xs font-bold text-slate-400 uppercase tracking-wider w-1/4">
                                   Vendor ID / Name
                                 </th>
-                                {cat.components.map((comp, compIdx) => (
-                                  <th 
-                                    key={comp.id} 
-                                    scope="col" 
-                                    className={`px-4 py-3.5 text-right text-xs font-bold text-slate-400 uppercase tracking-widest relative group/vhead transition ${
-                                      draggedComponentInfo?.catId === cat.id && draggedComponentInfo?.compIndex === compIdx 
-                                        ? "opacity-35 bg-indigo-50/30 ring-1 ring-indigo-450" 
-                                        : ""
-                                    }`}
-                                    onDragOver={(e) => handleComponentDragOver(e)}
-                                    onDrop={(e) => handleComponentDrop(e, cat.id, compIdx)}
-                                  >
-                                    <div className="flex items-center justify-end gap-1 group">
-                                      {/* Drag Handle for Component Column */}
-                                      <div
-                                        draggable
-                                        onDragStart={(e) => handleComponentDragStart(e, cat.id, compIdx)}
-                                        className="p-0.5 cursor-grab text-slate-300 hover:text-indigo-600 hover:bg-slate-50/50 rounded opacity-0 group-hover/vhead:opacity-100 transition duration-150 print:hidden shrink-0 flex items-center justify-center"
-                                        title="Drag to reorder component column"
-                                      >
-                                        <GripVertical size={12} />
-                                      </div>
-
-                                      {editingField.type === "component-name" && editingField.id === cat.id && editingField.subId === comp.id ? (
-                                        <input
-                                          type="text"
-                                          value={editValue}
-                                          onChange={(e) => setEditValue(e.target.value)}
-                                          onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
-                                          onBlur={saveInlineEdit}
-                                          autoFocus
-                                          className="text-right font-extrabold text-slate-900 border-b border-indigo-500 text-xs py-0.5 focus:outline-hidden w-24 bg-white"
-                                        />
-                                      ) : (
-                                        <span
-                                          onClick={() => startEditing("component-name", cat.id, comp.id, comp.name)}
-                                          className="cursor-pointer hover:text-indigo-600 select-all border-b border-transparent hover:border-slate-300 font-extrabold text-slate-900 mr-2"
-                                          title="Click to rename component column"
+                                {cat.components.map((comp, compIdx) => {
+                                  const isExcluded = isComponentExcluded(cat.id, comp.id);
+                                  return (
+                                    <th 
+                                      key={comp.id} 
+                                      scope="col" 
+                                      className={`px-4 py-3.5 text-right text-xs font-bold text-slate-400 uppercase tracking-widest relative group/vhead transition ${
+                                        draggedComponentInfo?.catId === cat.id && draggedComponentInfo?.compIndex === compIdx 
+                                          ? "opacity-35 bg-indigo-50/30 ring-1 ring-indigo-450" 
+                                          : ""
+                                      } ${isExcluded ? "bg-slate-100/40" : ""}`}
+                                      onDragOver={(e) => handleComponentDragOver(e)}
+                                      onDrop={(e) => handleComponentDrop(e, cat.id, compIdx)}
+                                    >
+                                      <div className="flex items-center justify-end gap-1.5 group">
+                                        {/* Drag Handle for Component Column */}
+                                        <div
+                                          draggable
+                                          onDragStart={(e) => handleComponentDragStart(e, cat.id, compIdx)}
+                                          className="p-0.5 cursor-grab text-slate-300 hover:text-indigo-600 hover:bg-slate-50/50 rounded opacity-0 group-hover/vhead:opacity-100 transition duration-150 print:hidden shrink-0 flex items-center justify-center"
+                                          title="Drag to reorder component column"
                                         >
-                                          {comp.name}
-                                        </span>
-                                      )}
+                                          <GripVertical size={12} />
+                                        </div>
 
-                                      {/* Inline Component Delete Button */}
-                                      <button 
-                                        onClick={() => deleteCostComponent(cat.id, comp.id, comp.name)} 
-                                        className="text-slate-400 hover:text-rose-500 rounded p-1 transition print:hidden ml-1 shrink-0"
-                                        title={`Remove ${comp.name} from category`}
-                                      >
-                                        <Trash2 size={11} />
-                                      </button>
-                                    </div>
-                                  </th>
-                                ))}
+                                        {/* Transposed Component include/exclude toggle */}
+                                        <button
+                                          onClick={() => toggleCostComponentIncluded(cat.id, comp.id)}
+                                          className={`p-1 rounded transition duration-150 print:hidden shrink-0 flex items-center justify-center cursor-pointer ${
+                                            isExcluded
+                                              ? "text-slate-300 hover:text-emerald-600 hover:bg-emerald-50 bg-slate-100/60 font-black"
+                                              : "text-emerald-600 hover:text-rose-600 hover:bg-rose-50 bg-emerald-50/30 font-black"
+                                          }`}
+                                          title={isExcluded ? "Currently excluded. Click to include in TCO totals" : "Currently included. Click to exclude from TCO totals"}
+                                        >
+                                          {isExcluded ? (
+                                            <X size={10} className="stroke-[3px]" />
+                                          ) : (
+                                            <Check size={10} className="stroke-[3px]" />
+                                          )}
+                                        </button>
+  
+                                        {editingField.type === "component-name" && editingField.id === cat.id && editingField.subId === comp.id ? (
+                                          <input
+                                            type="text"
+                                            value={editValue}
+                                            onChange={(e) => setEditValue(e.target.value)}
+                                            onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
+                                            onBlur={saveInlineEdit}
+                                            autoFocus
+                                            className="text-right font-extrabold text-slate-900 border-b border-indigo-500 text-xs py-0.5 focus:outline-hidden w-24 bg-white"
+                                          />
+                                        ) : (
+                                          <span
+                                            onClick={() => startEditing("component-name", cat.id, comp.id, comp.name)}
+                                            className={`cursor-pointer hover:text-indigo-600 select-all border-b border-transparent hover:border-slate-300 font-extrabold mr-2 duration-150 transition-all ${
+                                              isExcluded ? "text-slate-400 line-through italic" : "text-slate-900"
+                                            }`}
+                                            title="Click to rename component column"
+                                          >
+                                            {comp.name}
+                                          </span>
+                                        )}
+  
+                                        {/* Inline Component Delete Button */}
+                                        <button 
+                                          onClick={() => deleteCostComponent(cat.id, comp.id, comp.name)} 
+                                          className="text-slate-400 hover:text-rose-500 rounded p-1 transition print:hidden ml-1 shrink-0"
+                                          title={`Remove ${comp.name} from category`}
+                                        >
+                                          <Trash2 size={11} />
+                                        </button>
+                                      </div>
+                                    </th>
+                                  );
+                                })}
                                 <th scope="col" className="px-4 py-3.5 text-right text-xs font-bold text-slate-400 uppercase tracking-widest">
                                   Total ({cat.name})
                                 </th>
@@ -2873,6 +3013,7 @@ export default function App() {
 
                                     {/* Component value cells */}
                                     {cat.components.map((comp) => {
+                                      const isExcluded = isComponentExcluded(cat.id, comp.id);
                                       const rawVal = project.costValues[cat.id]?.[comp.id]?.[vendor.id] ?? 0;
                                       const factor = getComponentScaleFactor(comp.name, comp.id, tcoYears, cat.components);
                                       const scaledVal = rawVal * factor;
@@ -2884,14 +3025,15 @@ export default function App() {
 
                                       return (
                                         <td key={comp.id} className="px-4 py-3 text-right">
-                                          <div className="flex flex-col items-end justify-center">
+                                          <div className={`flex flex-col items-end justify-center ${isExcluded ? "opacity-45" : ""}`}>
                                             <div className="flex items-center justify-end font-mono text-sm antialiased text-slate-800">
-                                              <span className="text-xs text-slate-400 font-semibold mr-0.5 select-none font-sans">
+                                              <span className={`text-xs font-semibold mr-0.5 select-none font-sans ${isExcluded ? "text-slate-350" : "text-slate-400"}`}>
                                                 {CURRENCY_SYMBOLS[project.currency] || "$"}
                                               </span>
                                               <input
                                                 type="text"
                                                 defaultValue={rawVal === 0 ? "0" : rawVal.toString()}
+                                                disabled={isExcluded}
                                                 key={`${project.id}-${cat.id}-${comp.id}-${vendor.id}-${rawVal}`}
                                                 onBlur={(e) => handleCellChange(cat.id, comp.id, vendor.id, e.target.value)}
                                                 onKeyDown={(e) => {
@@ -2899,20 +3041,28 @@ export default function App() {
                                                     e.currentTarget.blur();
                                                   }
                                                 }}
-                                                className="text-right w-24 bg-transparent border-b border-transparent hover:border-slate-200 focus:border-indigo-500 focus:bg-indigo-50/20 focus:text-slate-900 rounded-sm font-bold antialiased py-0.5 px-1 focus:ring-1 focus:ring-indigo-150 focus:outline-hidden transition-all duration-150 select-all"
+                                                className={`text-right w-24 bg-transparent border-b border-transparent hover:border-slate-200 focus:border-indigo-500 focus:bg-indigo-50/20 focus:text-slate-900 rounded-sm font-bold antialiased py-0.5 px-1 focus:ring-1 focus:ring-indigo-150 focus:outline-hidden transition-all duration-150 select-all ${
+                                                  isExcluded ? "text-slate-400 line-through italic cursor-not-allowed" : "text-slate-800"
+                                                }`}
                                               />
                                             </div>
                                             {showDualConversion(rawVal)}
 
                                             {/* Scaled TCO indicator for annual/recurring components */}
-                                            {factor !== 1 && (
-                                              <span className={`text-[10px] font-bold font-mono mt-0.5 select-none ${factor === 0 ? "text-slate-400 italic" : "text-indigo-600 bg-indigo-50/50 px-1 py-0.5 rounded-sm scale-95"}`}>
-                                                {factor === 0 ? `Excluded` : `TCO: ${formatCurrency(scaledVal)}`}
+                                            {isExcluded ? (
+                                              <span className="text-[10px] font-bold font-mono mt-0.5 text-slate-400 bg-slate-100 rounded px-1.5 py-0.5 select-none scale-95 italic">
+                                                Excluded
                                               </span>
+                                            ) : (
+                                              factor !== 1 && (
+                                                <span className={`text-[10px] font-bold font-mono mt-0.5 select-none ${factor === 0 ? "text-slate-400 italic" : "text-indigo-600 bg-indigo-50/50 px-1 py-0.5 rounded-sm scale-95"}`}>
+                                                  {factor === 0 ? `Excluded` : `TCO: ${formatCurrency(scaledVal)}`}
+                                                </span>
+                                              )
                                             )}
 
                                             {/* Variance indicator relative to column average */}
-                                            {project.vendors.length > 1 && compAvg > 0 && (() => {
+                                            {!isExcluded && project.vendors.length > 1 && compAvg > 0 && (() => {
                                               const diffPercent = ((scaledVal - compAvg) / compAvg) * 100;
                                               if (Math.abs(diffPercent) < 0.1) {
                                                 return (
@@ -2939,9 +3089,17 @@ export default function App() {
                                     })}
 
                                     {/* Row Total */}
-                                    <td className="px-4 py-3 text-right font-mono text-sm font-black text-slate-900">
+                                    <td className="px-4 py-3 text-right font-mono text-sm font-black text-slate-900 border-b-2 border-double border-slate-300">
                                       <div className="flex flex-col items-end justify-center">
                                         <span>{formatCurrency(catTotal)}</span>
+                                        {catTotal > 0 && (() => {
+                                          const breakdown = getCategoryTotalBreakdown(cat.id, vendor.id);
+                                          return (
+                                            <span className="text-[9.5px] text-slate-500 font-sans tracking-tight mt-1 leading-tight text-right block font-semibold">
+                                              {formatCurrency(breakdown.oneTime)} <span className="text-slate-400 font-normal">one-time</span> + {formatCurrency(breakdown.recurring)} <span className="text-slate-400 font-normal">recurring</span>
+                                            </span>
+                                          );
+                                        })()}
                                         {showDualConversion(catTotal)}
                                         {project.vendors.length > 1 && totalAvg > 0 && (() => {
                                           const diffPercent = ((catTotal - totalAvg) / totalAvg) * 100;
@@ -2981,31 +3139,8 @@ export default function App() {
                                 );
                               })}
 
-                              {/* bottom Row: Averages or component sums */}
-                              <tr className="bg-slate-50/40 font-bold border-t border-slate-200">
-                                <td className="px-4 py-3 text-xs font-extrabold uppercase text-slate-500 tracking-wider">
-                                  Component Avg
-                                </td>
-                                {cat.components.map((comp) => {
-                                  const compPrices = project.vendors.map(v => {
-                                    const raw = project.costValues[cat.id]?.[comp.id]?.[v.id] ?? 0;
-                                    const factor = getComponentScaleFactor(comp.name, comp.id, tcoYears, cat.components);
-                                    return raw * factor;
-                                  });
-                                  const averagePrice = compPrices.length > 0 ? compPrices.reduce((a, b) => a + b, 0) / compPrices.length : 0;
-                                  return (
-                                    <td key={comp.id} className="px-4 py-3 text-right font-mono text-xs text-slate-600 font-bold border-b-2 border-double border-slate-300">
-                                      <div className="flex flex-col items-end justify-center">
-                                        <span>{formatCurrency(averagePrice)}</span>
-                                        {showDualConversion(averagePrice)}
-                                      </div>
-                                    </td>
-                                  );
-                                })}
-                                {/* Empty total cell for the average row */}
-                                <td className="border-b-2 border-double border-slate-300"></td>
-                                <td className="print:hidden border-b-2 border-double border-slate-300"></td>
-                              </tr>
+
+                              {/* Bottom of transposed table - bottom row is removed per request */}
                             </tbody>
                           </table>
                         )}
@@ -3324,12 +3459,24 @@ export default function App() {
                   {/* GRAND TOTAL BLOCK */}
                   <tr className="bg-[#e4f3f6] font-bold border-t-2 border-[#b0dfeb] print:bg-slate-50 print:border-slate-300">
                     <td className="px-4 py-4 text-xs font-extrabold uppercase text-[#0f766e] tracking-wider print:text-[#0f766e]">
-                      GRAND TOTAL
+                      <div className="flex flex-col gap-2 items-start">
+                        <span>GRAND TOTAL</span>
+                        <button
+                          type="button"
+                          onClick={() => setShowGrandTotalBreakdown(!showGrandTotalBreakdown)}
+                          className="text-[9px] font-bold text-teal-800 hover:text-teal-950 bg-teal-100 hover:bg-teal-200 border border-teal-250 px-2 py-1 rounded-sm transition select-none print:hidden cursor-pointer"
+                          title="Toggle Onetime vs Other amounts breakdown details"
+                        >
+                          {showGrandTotalBreakdown ? "Hide Formula" : "Show Formula Details"}
+                        </button>
+                      </div>
                     </td>
                     
                     {project.vendors.map((v) => {
                       const grandTotalVal = getVendorGrandTotal(v.id);
                       const isCheapest = briefing && briefing.cheapest.id === v.id && grandTotalVal > 0;
+                      
+                      const breakdown = getVendorGrandTotalBreakdown(v.id);
                       
                       // Calculate average grand total across all vendors
                       const grandTotalsList = project.vendors.map(vendor => getVendorGrandTotal(vendor.id));
@@ -3344,7 +3491,14 @@ export default function App() {
                             <span className={`font-mono text-base font-black antialiased ${isCheapest ? "text-emerald-700 print:text-emerald-800" : "text-slate-800 print:text-slate-900"}`}>
                               {formatCurrency(grandTotalVal)}
                             </span>
-                            {showDualConversion(grandTotalVal, "text-xs text-teal-850 font-bold font-mono drop-shadow-[0_1px_1px_rgba(255,255,255,0.85)] leading-tight mt-0.5 select-none text-right block")}
+                            
+                            {showGrandTotalBreakdown && grandTotalVal > 0 && (
+                              <span className="text-[10px] text-[#0f766e] font-sans tracking-tight leading-tight mt-1 select-none text-right block font-semibold">
+                                {formatCurrency(breakdown.oneTime)} <span className="text-slate-450 font-normal">one-time</span> + {formatCurrency(breakdown.recurring)} <span className="text-slate-450 font-normal">other amounts</span>
+                              </span>
+                            )}
+                            
+                            {showDualConversion(grandTotalVal, "text-xs text-teal-850 font-bold font-mono drop-shadow-[0_1px_1px_rgba(255,255,255,0.85)] leading-tight mt-1.5 select-none text-right block")}
                             
                             {project.vendors.length > 1 && grandAvg > 0 && grandTotalVal > 0 && (() => {
                               if (Math.abs(diffPercent) < 0.1) {
