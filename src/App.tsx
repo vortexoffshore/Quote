@@ -2712,13 +2712,6 @@ export default function App() {
               <FileDown size={14} /> Export Backup
             </button>
             <button 
-              onClick={exportToExcel}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition duration-150 cursor-pointer shadow-xs"
-              title="Export currently active project comparison values to highly styled professional Excel workbook"
-            >
-              <FileSpreadsheet size={14} /> Export Excel
-            </button>
-            <button 
               onClick={triggerFileSelect}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs font-semibold rounded-lg transition duration-150 cursor-pointer"
               title="Load saved comparison JSON back"
@@ -4345,23 +4338,72 @@ export default function App() {
                     })()}
 
                     {/* Category-Specific Supplying Parameters & Qualitative Milestones */}
-                    <div className="border border-cyan-100/70 bg-cyan-50/15 rounded-2xl p-4 sm:p-6 flex flex-col gap-4 mt-5">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                        <div>
-                          <h5 className="text-xs font-black text-[#0e7490] uppercase tracking-wider flex items-center gap-1.5">
-                            <FileText size={13} className="text-[#0e7490]" /> Supplying Parameters & Qualitative Milestones
-                          </h5>
-                          <p className="text-[10px] sm:text-xs text-slate-500 mt-0.5">Define license configurations, payment schedules, and timeline conditions specifically for the {cat.name} category.</p>
+                    {project.deletedCategoryQualitativeSections?.[cat.id] ? (
+                      <div className="border border-dashed border-[#bfe2ea] bg-cyan-50/10 rounded-2xl p-4 flex sm:flex-row flex-col items-center justify-between gap-3 mt-5 print:hidden">
+                        <div className="flex items-center gap-2">
+                          <FileText size={14} className="text-[#0e7490] shrink-0 animate-pulse" />
+                          <span className="text-xs font-semibold text-slate-500">
+                            Supplying Parameters & Qualitative Milestones section has been deleted/hidden for the "{cat.name}" category.
+                          </span>
                         </div>
                         <button
                           type="button"
-                          onClick={() => addCategoryQualitativeRow(cat.id)}
-                          className="flex items-center gap-1 px-2.5 py-1.5 bg-cyan-600 hover:bg-cyan-700 text-white text-[10px] font-bold rounded-lg transition shadow-3xs cursor-pointer select-none print:hidden shrink-0 self-start sm:self-center"
-                          title="Add custom qualitative parameter row for this category"
+                          onClick={() => {
+                            const updated = { ...project };
+                            if (!updated.deletedCategoryQualitativeSections) {
+                              updated.deletedCategoryQualitativeSections = {};
+                            }
+                            updated.deletedCategoryQualitativeSections[cat.id] = false;
+                            updateCurrentProject(updated);
+                            showToast("Qualitative section restored.");
+                          }}
+                          className="px-2.5 py-1.5 bg-cyan-50 hover:bg-cyan-100 text-[10.5px] font-extrabold text-cyan-700 rounded-lg cursor-pointer transition select-none"
                         >
-                          <Plus size={11} className="stroke-[2.5]" /> Add Category Row
+                          Restore Section
                         </button>
                       </div>
+                    ) : (
+                      <div className="border border-cyan-100/70 bg-cyan-50/15 rounded-2xl p-4 sm:p-6 flex flex-col gap-4 mt-5">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div>
+                            <h5 className="text-xs font-black text-[#0e7490] uppercase tracking-wider flex items-center gap-1.5">
+                              <FileText size={13} className="text-[#0e7490]" /> Supplying Parameters & Qualitative Milestones
+                            </h5>
+                            <p className="text-[10px] sm:text-xs text-slate-500 mt-0.5">Define license configurations, payment schedules, and timeline conditions specifically for the {cat.name} category.</p>
+                          </div>
+                          <div className="flex items-center gap-2 print:hidden shrink-0 self-start sm:self-center">
+                            <button
+                              type="button"
+                              onClick={() => addCategoryQualitativeRow(cat.id)}
+                              className="flex items-center gap-1 px-2.5 py-1.5 bg-cyan-600 hover:bg-cyan-700 text-white text-[10px] font-bold rounded-lg transition shadow-3xs cursor-pointer select-none"
+                              title="Add custom qualitative parameter row for this category"
+                            >
+                              <Plus size={11} className="stroke-[2.5]" /> Add Category Row
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setConfirmDialog({
+                                  title: "Delete Qualitative Section",
+                                  message: `Are you sure you want to delete the Qualitative Parameters section for "${cat.name}"? This hides it from view and the print layout.`,
+                                  onConfirm: () => {
+                                    const updated = { ...project };
+                                    if (!updated.deletedCategoryQualitativeSections) {
+                                      updated.deletedCategoryQualitativeSections = {};
+                                    }
+                                    updated.deletedCategoryQualitativeSections[cat.id] = true;
+                                    updateCurrentProject(updated);
+                                    showToast("Qualitative section deleted.");
+                                  }
+                                });
+                              }}
+                              className="flex items-center gap-1 px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 text-[10px] font-bold rounded-lg transition shadow-3xs cursor-pointer select-none"
+                              title="Delete/Hide this section entirely"
+                            >
+                              <Trash2 size={11} /> Delete Section
+                            </button>
+                          </div>
+                        </div>
 
                       <div className="overflow-x-auto rounded-xl border border-cyan-100/80 bg-white shadow-3xs">
                         <table className="w-full text-left border-collapse text-xs">
@@ -4492,6 +4534,7 @@ export default function App() {
                         </table>
                       </div>
                     </div>
+                    )}
 
                     {/* Quick helper controls at table footer context */}
                     <div className="flex items-center gap-4 mt-1 border-t border-slate-100 pt-4 print:hidden">
@@ -4517,23 +4560,66 @@ export default function App() {
             })}
 
             {/* QUALITATIVE PARAMETERS MATRIX (Plan, Milestones, Onboarding) */}
-            <div className="border border-[#c0e6ee] rounded-3xl bg-[#f0f9fa]/50 backdrop-blur-md shadow-sm overflow-hidden mt-4 p-6 md:p-8 flex flex-col gap-6">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div>
-                  <h4 className="text-xs font-extrabold text-[#0e7490] uppercase tracking-widest flex items-center gap-2">
-                    <FileText size={14} className="text-[#0e7490]" /> Supplying Parameters & Qualitative Milestones
-                  </h4>
-                  <p className="text-xs text-slate-500 mt-1">Provide license specifics, incremental payout installments, and transition expectations for each tender supplier.</p>
+            {project.deletedProjectQualitativeSection ? (
+              <div className="border border-dashed border-[#c0e6ee] bg-[#f0f9fa]/20 rounded-3xl p-6 flex sm:flex-row flex-col items-center justify-between gap-4 mt-4 print:hidden">
+                <div className="flex items-center gap-2">
+                  <FileText size={16} className="text-[#0e7490] shrink-0 animate-pulse" />
+                  <span className="text-sm font-semibold text-slate-500">
+                    Project-level Supplying Parameters & Qualitative Milestones section has been deleted/hidden.
+                  </span>
                 </div>
                 <button
                   type="button"
-                  onClick={addQualitativeRow}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-600 hover:bg-cyan-700 text-white text-xs font-bold rounded-lg transition shadow-xs cursor-pointer select-none print:hidden"
-                  title="Add custom qualitative parameter row to compare vendors"
+                  onClick={() => {
+                    const updated = { ...project };
+                    updated.deletedProjectQualitativeSection = false;
+                    updateCurrentProject(updated);
+                    showToast("Qualitative section restored.");
+                  }}
+                  className="px-3 py-1.5 bg-cyan-50 hover:bg-cyan-100 text-xs font-bold text-cyan-700 rounded-lg cursor-pointer transition select-none"
                 >
-                  <Plus size={13} /> Add Qualitative Row
+                  Restore Section
                 </button>
               </div>
+            ) : (
+              <div className="border border-[#c0e6ee] rounded-3xl bg-[#f0f9fa]/50 backdrop-blur-md shadow-sm overflow-hidden mt-4 p-6 md:p-8 flex flex-col gap-6">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div>
+                    <h4 className="text-xs font-extrabold text-[#0e7490] uppercase tracking-widest flex items-center gap-2">
+                      <FileText size={14} className="text-[#0e7490]" /> Supplying Parameters & Qualitative Milestones
+                    </h4>
+                    <p className="text-xs text-slate-500 mt-1">Provide license specifics, incremental payout installments, and transition expectations for each tender supplier.</p>
+                  </div>
+                  <div className="flex items-center gap-2 print:hidden">
+                    <button
+                      type="button"
+                      onClick={addQualitativeRow}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-600 hover:bg-cyan-700 text-white text-xs font-bold rounded-lg transition shadow-xs cursor-pointer select-none"
+                      title="Add custom qualitative parameter row to compare vendors"
+                    >
+                      <Plus size={13} /> Add Qualitative Row
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setConfirmDialog({
+                          title: "Delete Qualitative Section",
+                          message: "Are you sure you want to delete the Project-level Qualitative Parameters section? This will hide it from the viewport and the print layout.",
+                          onConfirm: () => {
+                            const updated = { ...project };
+                            updated.deletedProjectQualitativeSection = true;
+                            updateCurrentProject(updated);
+                            showToast("Qualitative section deleted.");
+                          }
+                        });
+                      }}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 text-xs font-bold rounded-lg transition shadow-xs cursor-pointer select-none"
+                      title="Delete/Hide this section entirely"
+                    >
+                      <Trash2 size={13} /> Delete Section
+                    </button>
+                  </div>
+                </div>
 
               <div className="overflow-x-auto rounded-2xl border border-[#bfe2ea] bg-white shadow-3xs">
                 <table className="w-full text-left border-collapse">
@@ -4664,6 +4750,7 @@ export default function App() {
                 </table>
               </div>
             </div>
+            )}
           </div>
         </section>
 
