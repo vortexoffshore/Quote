@@ -198,9 +198,27 @@ export default function App() {
   // Cloud autosave disabled due to Firestore write quota exhaustion.
   // We rely fully on local storage backup to prevent trailing sync errors.
 
-  // TCO projection duration (1-year vs 2-year vs 3-year)
-  const tcoYears = project.tcoYears || 2;
-  const setTcoYears = (val: 1 | 2 | 3) => {
+  // Helper to dynamically calculate maximum TCO years based on modern components names
+  const getMaximumAvailableYearsCount = (p: QuoteProject): number => {
+    let maxYear = 3; // Start from at least 3 years as standard base
+    p.categories?.forEach(cat => {
+      cat.components?.forEach(comp => {
+        const matchYear = comp.name.match(/(?:Year|Yr|Y)\s*(\d+)/i) || comp.id.match(/(?:year|yr|y)-?(\d+)/i);
+        if (matchYear) {
+          const yr = parseInt(matchYear[1], 10);
+          if (yr > maxYear) {
+            maxYear = yr;
+          }
+        }
+      });
+    });
+    return maxYear;
+  };
+
+  const maxYearsCount = getMaximumAvailableYearsCount(project);
+  // Get active TCO years, either saved project choice or fallback capped at upper bound
+  const tcoYears = Math.min(project.tcoYears || 3, maxYearsCount);
+  const setTcoYears = (val: number) => {
     updateCurrentProject({ ...project, tcoYears: val });
   };
 
@@ -484,6 +502,134 @@ export default function App() {
     setProjects(prev => prev.map(p => p.id === updated.id ? updated : p));
   };
 
+  // Auto-clone dynamic TCO cloned cost components for Year 2 and Year 3
+  const autoCloneAnnualCosts = (currentProj: QuoteProject): { updated: QuoteProject; changed: boolean } => {
+    let changed = false;
+    const duration = currentProj.tcoYears || 1;
+    if (duration < 2) return { updated: currentProj, changed: false };
+
+    const updatedCostValues = JSON.parse(JSON.stringify(currentProj.costValues));
+    let mainChanged = false;
+
+    const updatedCategories = currentProj.categories.map(cat => {
+      let comps = [...cat.components];
+      let catChanged = false;
+
+      cat.components.forEach(comp => {
+        const nameLower = comp.name.toLowerCase();
+        // Look for the exact phrase "annual cost" (case-insensitive)
+        const isAnnualCost = nameLower.includes("annual cost");
+        if (!isAnnualCost) return;
+
+        // Check if only year 1 is there (either contains "year 1" / "yr 1" / "y1" or is generic without other years present)
+        const isY1 = nameLower.includes("year 1") || nameLower.includes("yr 1") || nameLower.includes("y1") ||
+          (!nameLower.includes("year 2") && !nameLower.includes("year 3") && 
+           !nameLower.includes("yr 2") && !nameLower.includes("yr 3") &&
+           !nameLower.includes("y2") && !nameLower.includes("y3"));
+
+        if (!isY1) return;
+
+        // Deterministic target IDs for Year 2 and Year 3 clones
+        const y2Id = `${comp.id}-year-2`;
+        const y3Id = `${comp.id}-year-3`;
+
+        // Let's check for Year 2
+        if (duration >= 2) {
+          const hasY2 = comps.some(c => c.id === y2Id || 
+            (c.name.toLowerCase().includes("annual cost") && 
+             (c.name.toLowerCase().includes("year 2") || c.name.toLowerCase().includes("yr 2") || c.name.toLowerCase().includes("y2")))
+          );
+
+          if (!hasY2) {
+            const y2Name = comp.name
+              .replace(/year\s*1/i, "Year 2")
+              .replace(/yr\s*1/i, "Yr 2")
+              .replace(/y1/i, "Y2") + (comp.name.toLowerCase().includes("year") || comp.name.toLowerCase().includes("yr") ? "" : " Year 2");
+            
+            const idx = comps.findIndex(c => c.id === comp.id);
+            if (idx !== -1) {
+              comps.splice(idx + 1, 0, { id: y2Id, name: y2Name });
+              catChanged = true;
+              mainChanged = true;
+
+              // Clone cost values for all vendors
+              if (!updatedCostValues[cat.id]) updatedCostValues[cat.id] = {};
+              updatedCostValues[cat.id][y2Id] = {};
+              currentProj.vendors.forEach(v => {
+                const baseVal = updatedCostValues[cat.id]?.[comp.id]?.[v.id] ?? 0;
+                updatedCostValues[cat.id][y2Id][v.id] = baseVal;
+              });
+            }
+          }
+        }
+
+        // Let's check for Year 3
+        if (duration >= 3) {
+          const hasY3 = comps.some(c => c.id === y3Id || 
+            (c.name.toLowerCase().includes("annual cost") && 
+             (c.name.toLowerCase().includes("year 3") || c.name.toLowerCase().includes("yr 3") || c.name.toLowerCase().includes("y3")))
+          );
+
+          if (!hasY3) {
+            const y3Name = comp.name
+              .replace(/year\s*1/i, "Year 3")
+              .replace(/yr\s*1/i, "Yr 3")
+              .replace(/y1/i, "Y3") + (comp.name.toLowerCase().includes("year") || comp.name.toLowerCase().includes("yr") ? "" : " Year 3");
+
+            // Insert after Year 2 if it was just added, or after comp
+            let idx = comps.findIndex(c => c.id === y2Id);
+            if (idx === -1) {
+              idx = comps.findIndex(c => c.id === comp.id);
+            }
+            if (idx !== -1) {
+              comps.splice(idx + 1, 0, { id: y3Id, name: y3Name });
+              catChanged = true;
+              mainChanged = true;
+
+              // Clone cost values for all vendors
+              if (!updatedCostValues[cat.id]) updatedCostValues[cat.id] = {};
+              updatedCostValues[cat.id][y3Id] = {};
+              currentProj.vendors.forEach(v => {
+                const baseVal = updatedCostValues[cat.id]?.[comp.id]?.[v.id] ?? 0;
+                updatedCostValues[cat.id][y3Id][v.id] = baseVal;
+              });
+            }
+          }
+        }
+      });
+
+      if (catChanged) {
+        return {
+          ...cat,
+          components: comps
+        };
+      }
+      return cat;
+    });
+
+    if (mainChanged) {
+      return {
+        updated: {
+          ...currentProj,
+          categories: updatedCategories,
+          costValues: updatedCostValues
+        },
+        changed: true
+      };
+    }
+    return { updated: currentProj, changed: false };
+  };
+
+  // Watch for annual costs requiring auto cloning on project changes
+  useEffect(() => {
+    if (!project) return;
+    const { updated, changed } = autoCloneAnnualCosts(project);
+    if (changed) {
+      setProjects(prev => prev.map(p => p.id === project.id ? updated : p));
+      setIsUnsavedCloud(true);
+    }
+  }, [project?.id, project?.tcoYears, project?.categories, project?.vendors]);
+
   // Formatting helper
   const formatCurrency = (amount: number) => {
     const symbol = CURRENCY_SYMBOLS[project.currency] || "$";
@@ -529,7 +675,7 @@ export default function App() {
   };
 
   // Helper to determine annual scaling factor
-  const getComponentScaleFactor = (compName: string, compId: string, duration: 1 | 2 | 3, categoryComponents?: CostComponent[]): number => {
+  const getComponentScaleFactor = (compName: string, compId: string, duration: number, categoryComponents?: CostComponent[]): number => {
     const nameLower = compName.toLowerCase();
     const idLower = compId.toLowerCase();
     
@@ -545,32 +691,14 @@ export default function App() {
 
     if (!isAnnual) return 1;
 
-    const isYear1 = nameLower.includes("year 1") || nameLower.includes("yr 1") || nameLower.includes("y1") || idLower.includes("year-1") || idLower.includes("yr-1");
-    const isYear2 = nameLower.includes("year 2") || nameLower.includes("yr 2") || nameLower.includes("y2") || idLower.includes("year-2") || idLower.includes("yr-2");
-    const isYear3 = nameLower.includes("year 3") || nameLower.includes("yr 3") || nameLower.includes("y3") || idLower.includes("year-3") || idLower.includes("yr-3");
-
-    if (isYear1) return 1;
-    if (isYear2) {
-      if (duration === 1) {
-        return 0;
-      } else if (duration === 2) {
-        return 1;
-      } else {
-        // duration is 3
-        // Check if there's already a Year 3 component in the category
-        const hasYear3 = categoryComponents?.some(c => {
-          const cn = c.name.toLowerCase();
-          const ci = c.id.toLowerCase();
-          return cn.includes("year 3") || cn.includes("yr 3") || cn.includes("y3") || ci.includes("year-3") || ci.includes("yr-3");
-        });
-        return hasYear3 ? 1 : 2; // If custom Year 3 component is present, don't duplicate/scale Year 2
+    // Try to extract Year/Yr N
+    const match = compName.match(/(?:Year|Yr|Y)\s*(\d+)/i) || compId.match(/(?:year|yr|y)-?(\d+)/i);
+    if (match) {
+      const yearNum = parseInt(match[1], 10);
+      if (yearNum > duration) {
+        return 0; // Out of dynamic TCO range
       }
-    }
-    if (isYear3) {
-      if (duration === 1 || duration === 2) {
-        return 0;
-      }
-      return 1;
+      return 1; // Within range
     }
 
     // Generic annual components (e.g. "Annual Support Fee") with no specific year suffix
@@ -1002,6 +1130,143 @@ export default function App() {
     updateCurrentProject(updated);
   };
 
+  const getCategoryQualitativeRows = (p: QuoteProject, catId: string): QualitativeRow[] => {
+    if (p.categoryQualitativeRows?.[catId] && p.categoryQualitativeRows[catId].length > 0) {
+      return p.categoryQualitativeRows[catId];
+    }
+    const vens = p.vendors || [];
+    const defaultRows: QualitativeRow[] = [
+      {
+        id: `plan-model-${catId}`,
+        name: "Plan / Model Description",
+        description: "Software tier details, seat allotments, licenses, or specific server models.",
+        values: vens.reduce((acc, v) => {
+          acc[v.id] = "";
+          return acc;
+        }, {} as Record<string, string>)
+      },
+      {
+        id: `payment-milestones-${catId}`,
+        name: "Payment Milestones",
+        description: "Incremental payout milestones (e.g., 30% advance, progress payments, or final acceptance).",
+        values: vens.reduce((acc, v) => {
+          acc[v.id] = "";
+          return acc;
+        }, {} as Record<string, string>)
+      },
+      {
+        id: `onboarding-timeline-${catId}`,
+        name: "Onboarding Timeline",
+        description: "Estimated system setup, cloud migration, key training schedules.",
+        values: vens.reduce((acc, v) => {
+          acc[v.id] = "";
+          return acc;
+        }, {} as Record<string, string>)
+      }
+    ];
+    return defaultRows;
+  };
+
+  const handleCategoryQualitativeRowHeaderChange = (catId: string, rowId: string, field: "name" | "description", val: string) => {
+    const currentRows = getCategoryQualitativeRows(project, catId);
+    const updatedRows = currentRows.map(row => {
+      if (row.id === rowId) {
+        return { ...row, [field]: val };
+      }
+      return row;
+    });
+    const updatedCategoryQualitativeRows = {
+      ...(project.categoryQualitativeRows || {}),
+      [catId]: updatedRows
+    };
+    updateCurrentProject({ ...project, categoryQualitativeRows: updatedCategoryQualitativeRows });
+  };
+
+  const handleCategoryQualitativeRowValueChange = (catId: string, rowId: string, vendorId: string, val: string) => {
+    const currentRows = getCategoryQualitativeRows(project, catId);
+    const updatedRows = currentRows.map(row => {
+      if (row.id === rowId) {
+        return {
+          ...row,
+          values: {
+            ...(row.values || {}),
+            [vendorId]: val
+          }
+        };
+      }
+      return row;
+    });
+    const updatedCategoryQualitativeRows = {
+      ...(project.categoryQualitativeRows || {}),
+      [catId]: updatedRows
+    };
+    updateCurrentProject({ ...project, categoryQualitativeRows: updatedCategoryQualitativeRows });
+  };
+
+  const cloneCategoryQualitativeRow = (catId: string, rowId: string) => {
+    const currentRows = getCategoryQualitativeRows(project, catId);
+    const targetRow = currentRows.find(r => r.id === rowId);
+    if (!targetRow) return;
+
+    const randomHex = Math.random().toString(36).substring(2, 7);
+    const clonedRow: QualitativeRow = {
+      id: `qual-${catId}-${randomHex}`,
+      name: `${targetRow.name} (Clone)`,
+      description: targetRow.description,
+      values: JSON.parse(JSON.stringify(targetRow.values || {}))
+    };
+
+    const updatedCategoryQualitativeRows = {
+      ...(project.categoryQualitativeRows || {}),
+      [catId]: [...currentRows, clonedRow]
+    };
+
+    updateCurrentProject({ ...project, categoryQualitativeRows: updatedCategoryQualitativeRows });
+    showToast(`Cloned category parameter "${targetRow.name}"`);
+  };
+
+  const deleteCategoryQualitativeRow = (catId: string, rowId: string) => {
+    const currentRows = getCategoryQualitativeRows(project, catId);
+    const targetRow = currentRows.find(r => r.id === rowId);
+    if (!targetRow) return;
+
+    setConfirmDialog({
+      title: "Delete Category Parameter",
+      message: `Are you sure you want to delete "${targetRow.name || "this parameter"}" for this category? All suppliers' descriptions for this parameter will be deleted.`,
+      onConfirm: () => {
+        const remaining = currentRows.filter(r => r.id !== rowId);
+        const updatedCategoryQualitativeRows = {
+          ...(project.categoryQualitativeRows || {}),
+          [catId]: remaining
+        };
+        updateCurrentProject({ ...project, categoryQualitativeRows: updatedCategoryQualitativeRows });
+        showToast(`Deleted qualitative parameter "${targetRow.name}"`);
+      }
+    });
+  };
+
+  const addCategoryQualitativeRow = (catId: string) => {
+    const currentRows = getCategoryQualitativeRows(project, catId);
+    const randomHex = Math.random().toString(36).substring(2, 7);
+    const newRow: QualitativeRow = {
+      id: `qual-${catId}-${randomHex}`,
+      name: `New Parameter ${currentRows.length + 1}`,
+      description: "Description of the criteria / milestone terms.",
+      values: project.vendors.reduce((acc, v) => {
+        acc[v.id] = "";
+        return acc;
+      }, {} as Record<string, string>)
+    };
+
+    const updatedCategoryQualitativeRows = {
+      ...(project.categoryQualitativeRows || {}),
+      [catId]: [...currentRows, newRow]
+    };
+
+    updateCurrentProject({ ...project, categoryQualitativeRows: updatedCategoryQualitativeRows });
+    showToast("Added new qualitative parameter row for this category!");
+  };
+
   const getProjectQualitativeRows = (p: QuoteProject): QualitativeRow[] => {
     if (p.qualitativeRows && p.qualitativeRows.length > 0) {
       return p.qualitativeRows;
@@ -1209,33 +1474,31 @@ export default function App() {
     const newCatId = `category-${randomHex}`;
     const newCatName = `Custom Category ${project.categories.length + 1}`;
 
+    const duration = project.tcoYears || 3;
+    const comps = [
+      { id: "setup-cost", name: "Setup Cost" },
+      { id: "one-time-integration", name: "One-time Integration" }
+    ];
+    for (let i = 1; i <= duration; i++) {
+      comps.push({ id: `annual-fee-year-${i}`, name: `Annual Fee — Year ${i}` });
+    }
+
     const newCategory: Category = {
       id: newCatId,
       name: newCatName,
-      components: [
-        { id: "setup-cost", name: "Setup Cost" },
-        { id: "one-time-integration", name: "One-time Integration" },
-        { id: "annual-fee-year-1", name: "Annual Fee — Year 1" },
-        { id: "annual-fee-year-2", name: "Annual Fee — Year 2" }
-      ]
+      components: comps
     };
 
     const updatedCategories = [...project.categories, newCategory];
     const updatedCostValues = JSON.parse(JSON.stringify(project.costValues));
 
     // Initialize values mapping with 0s
-    updatedCostValues[newCatId] = {
-      "setup-cost": {},
-      "one-time-integration": {},
-      "annual-fee-year-1": {},
-      "annual-fee-year-2": {}
-    };
-
-    project.vendors.forEach(v => {
-      updatedCostValues[newCatId]["setup-cost"][v.id] = 0;
-      updatedCostValues[newCatId]["one-time-integration"][v.id] = 0;
-      updatedCostValues[newCatId]["annual-fee-year-1"][v.id] = 0;
-      updatedCostValues[newCatId]["annual-fee-year-2"][v.id] = 0;
+    updatedCostValues[newCatId] = {};
+    comps.forEach(comp => {
+      updatedCostValues[newCatId][comp.id] = {};
+      project.vendors.forEach(v => {
+        updatedCostValues[newCatId][comp.id][v.id] = 0;
+      });
     });
 
     const updatedComments = { ...project.comments, [newCatId]: "" };
@@ -2116,72 +2379,127 @@ export default function App() {
     showToast("JSON comparison model exported successfully!");
   };
 
-  // Export currently active project table data to a clean CSV format
-  const exportToCsv = () => {
+  // Export currently active project table data to a beautifully styled Excel workbook
+  const exportToExcel = () => {
     try {
-      const rows: string[][] = [];
+      const safeName = project.name.toLowerCase().replace(/[^a-z0-9]/g, "_");
+      const fileName = `${safeName}_quote_comparison_report.xls`;
 
-      // Escapes CSV values with double quotes and escaping embedded quotes
-      const escape = (val: string | number | undefined | null) => {
-        const str = String(val ?? "");
-        if (str.includes(",") || str.includes('"') || str.includes("\n") || str.includes("\r")) {
-          return `"${str.replace(/"/g, '""')}"`;
-        }
-        return str;
-      };
+      // Premium CSS style definitions supported by Microsoft Excel
+      let html = `
+        <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+        <head>
+        <meta charset="utf-8" />
+        <!--[if gte mso 9]>
+        <xml>
+         <x:ExcelWorkbook>
+          <x:ExcelWorksheets>
+           <x:ExcelWorksheet>
+            <x:Name>Comparison sheet</x:Name>
+            <x:WorksheetOptions>
+             <x:DisplayGridlines/>
+            </x:WorksheetOptions>
+           </x:ExcelWorksheet>
+          </x:ExcelWorksheets>
+         </x:ExcelWorkbook>
+        </xml>
+        <![endif]-->
+        <style>
+          body { font-family: 'Segoe UI', Arial, sans-serif; }
+          table { border-collapse: collapse; margin-bottom: 24px; width: 100%; }
+          th, td { border: 1px solid #cbd5e1; padding: 8px 12px; font-size: 11px; text-align: left; }
+          th { font-weight: bold; background-color: #1e3a8a; color: #ffffff; font-size: 11px; text-transform: uppercase; }
+          .num-col { text-align: right; }
+          .title { font-size: 18px; font-weight: bold; color: #1e3a8a; padding-bottom: 4px; }
+          .subtitle { font-size: 11px; color: #64748b; padding-bottom: 12px; }
+          .section-header { background-color: #0f172a; color: #ffffff; font-weight: bold; font-size: 11px; text-transform: uppercase; padding: 10px; }
+          .meta-label { font-weight: bold; color: #475569; width: 150px; background-color: #f8fafc; }
+          .meta-val { color: #1e293b; background-color: #f8fafc; }
+          .cat-header { background-color: #e0f2fe; color: #0369a1; font-weight: bold; font-size: 11px; text-transform: uppercase; border-bottom: 2px solid #bae6fd; }
+          .total-row { background-color: #f8fafc; font-weight: bold; border-top: 1.5px solid #94a3b8; }
+          .grand-total { background-color: #d1fae5; font-weight: bold; font-size: 11px; color: #065f46; border-top: 2px solid #059669; border-bottom: 3px double #059669; }
+          .score-row { font-weight: bold; background-color: #fef3c7; color: #b45309; }
+        </style>
+        </head>
+        <body>
+          <div class="title">${project.name}</div>
+          <div class="subtitle">Generated dynamically on ${formatDateDDMMYYYY(project.date)} | TCO Duration: ${tcoYears} Years | Currency Basis: ${project.currency}</div>
+          
+          <table>
+            <tr><td class="meta-label">Sheet Version</td><td class="meta-val" colspan="${project.vendors.length}">${project.version}</td></tr>
+            <tr><td class="meta-label">Currency Code</td><td class="meta-val" colspan="${project.vendors.length}">${project.currency}</td></tr>
+            <tr><td class="meta-label">Projection Limit</td><td class="meta-val" colspan="${project.vendors.length}">${tcoYears} Years TCO</td></tr>
+          </table>
 
-      // 1. Metadata Block
-      rows.push(["QUOTE COMPARISON PROJECT SPECIFICATION"]);
-      rows.push(["Project ID", project.id]);
-      rows.push(["Project Name", project.name]);
-      rows.push(["Evaluation Date", formatDateDDMMYYYY(project.date)]);
-      rows.push(["Sheet Version", project.version]);
-      rows.push(["Currency", project.currency]);
-      rows.push([]); // blank divider
-
-      // 2. Cost Analysis Matrix
-      rows.push(["SECTION 1: TCO COST BREAKDOWN MATRIX"]);
-      const costHeaderRow = ["Category / Component Item"];
-      project.vendors.forEach(v => {
-        costHeaderRow.push(`${v.name} (${project.currency})`);
-      });
-      rows.push(costHeaderRow);
+          <br/>
+          <table>
+            <thead>
+              <tr class="section-header">
+                <th colspan="${project.vendors.length + 1}">SECTION 1: TCO COST BREAKDOWN MATRIX (${tcoYears} Year projection)</th>
+              </tr>
+              <tr>
+                <th>Cost Category / Line Component</th>
+                ${project.vendors.map(v => `<th class="num-col">${v.name} (${project.currency})</th>`).join("")}
+              </tr>
+            </thead>
+            <tbody>
+      `;
 
       project.categories.forEach(cat => {
-        // Category section Header
-        const catGroupRow = [`[Category] ${cat.name}`];
-        project.vendors.forEach(() => catGroupRow.push(""));
-        rows.push(catGroupRow);
-
-        // Component line-items
+        html += `
+          <tr class="cat-header">
+            <td colspan="${project.vendors.length + 1}">[Category] ${cat.name}</td>
+          </tr>
+        `;
         cat.components.forEach(comp => {
-          const compRow = [`  - ${comp.name}`];
-          project.vendors.forEach(v => {
-            const val = project.costValues[cat.id]?.[comp.id]?.[v.id] ?? 0;
-            compRow.push(val.toString());
-          });
-          rows.push(compRow);
+          const factor = getComponentScaleFactor(comp.name, comp.id, tcoYears, cat.components);
+          html += `
+            <tr>
+              <td>&nbsp;&nbsp;• ${comp.name} ${factor > 1 ? `(x${factor} scale)` : factor === 0 ? '(Excluded)' : '(One-time)'}</td>
+              ${project.vendors.map(v => {
+                const rawVal = project.costValues[cat.id]?.[comp.id]?.[v.id] ?? 0;
+                const scaledVal = rawVal * factor;
+                return `<td class="num-col">${scaledVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>`;
+              }).join("")}
+            </tr>
+          `;
         });
-
-        // Category Total aggregate row
-        const catTotalRow = [`  - ${cat.name} Total Sum`];
-        project.vendors.forEach(v => {
-          const totalVal = getCategoryTotalForVendor(cat.id, v.id);
-          catTotalRow.push(totalVal.toString());
-        });
-        rows.push(catTotalRow);
-        rows.push([]); // formatting spacing
+        html += `
+          <tr class="total-row">
+            <td>&nbsp;&nbsp;<b>${cat.name} Total</b></td>
+            ${project.vendors.map(v => {
+              const totalVal = getCategoryTotalForVendor(cat.id, v.id);
+              return `<td class="num-col"><b>${totalVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b></td>`;
+            }).join("")}
+          </tr>
+        `;
       });
 
-      rows.push([]);
-
-      // 3. Multi-Criteria Qualitative Scorecard Matrix
-      rows.push(["SECTION 2: QUALITATIVE EVALUATION SCORECARD"]);
-      const scorecardHeaderRow = ["Evaluation Criteria Metric", "Metric Description / Parameters"];
-      project.vendors.forEach(v => {
-        scorecardHeaderRow.push(`${v.name} (1 to 5 Stars)`);
-      });
-      rows.push(scorecardHeaderRow);
+      html += `
+            <tr class="grand-total">
+              <td><b>GRAND TOTAL TCO ESTIMATE</b></td>
+              ${project.vendors.map(v => {
+                const grandVal = getVendorGrandTotal(v.id);
+                return `<td class="num-col"><b>${grandVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b></td>`;
+              }).join("")}
+            </tr>
+        </tbody>
+      </table>
+      
+      <br/>
+      <table>
+        <thead>
+          <tr class="section-header">
+            <th colspan="${project.vendors.length + 2}">SECTION 2: QUALITATIVE EVALUATION SCORECARD</th>
+          </tr>
+          <tr>
+            <th style="width: 200px;">Evaluation Criteria</th>
+            <th style="width: 300px;">Metric Description / KPI Details</th>
+            ${project.vendors.map(v => `<th class="num-col">${v.name} (1-5 Rating)</th>`).join("")}
+          </tr>
+        </thead>
+        <tbody>
+      `;
 
       const criteriaList = project.criteria || [
         { id: "technical", name: "Technical Competency", description: "API robustness, ERP/Invoicing standard compatibility" },
@@ -2191,81 +2509,79 @@ export default function App() {
       ];
 
       criteriaList.forEach(crit => {
-        const critRow = [crit.name, crit.description];
-        project.vendors.forEach(v => {
-          const score = scorecards[project.id]?.[v.id]?.[crit.id] || 3; // default is 3
-          critRow.push(score.toString());
-        });
-        rows.push(critRow);
+        html += `
+          <tr>
+            <td><b>${crit.name}</b></td>
+            <td>${crit.description}</td>
+            ${project.vendors.map(v => {
+              const score = scorecards[project.id]?.[v.id]?.[crit.id] || 3;
+              return `<td class="num-col">${score} Stars</td>`;
+            }).join("")}
+          </tr>
+        `;
       });
 
-      // Overall Score rating line
-      const scorecardAvgRow = ["Overall Average Score Rating", "Criteria Mean Value"];
+      html += `
+          <tr class="score-row">
+            <td colspan="2"><b>Overall Scorecard Average Rating (Mean Value)</b></td>
+            ${project.vendors.map(v => {
+              const avg = getVendorScorecardAvg(v.id);
+              return `<td class="num-col"><b>${avg > 0 ? `${avg.toFixed(2)} / 5.0` : "—"}</b></td>`;
+            }).join("")}
+          </tr>
+        </tbody>
+      </table>
+
+      <br/>
+      <table>
+        <thead>
+          <tr class="section-header">
+            <th colspan="2">SECTION 3: STRATEGIC ROLLING COMMENTARY & NOTES</th>
+          </tr>
+          <tr>
+            <th style="width: 200px;">Vendor Item</th>
+            <th>Procurement Analysis Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+      `;
+
       project.vendors.forEach(v => {
-        const avg = getVendorScorecardAvg(v.id);
-        scorecardAvgRow.push(avg.toString());
-      });
-      rows.push(scorecardAvgRow);
-
-      rows.push([]);
-      rows.push([]);
-
-      // 4. Grand TCO Cost Summary Matrix
-      rows.push([`SECTION 3: SUMMARY & ${tcoYears}-YEAR GRAND TOTAL TCO`]);
-      const summaryHeaderRow = ["Summary Category"];
-      project.vendors.forEach(v => {
-        summaryHeaderRow.push(`${v.name} (${project.currency})`);
-      });
-      rows.push(summaryHeaderRow);
-
-      project.categories.forEach(cat => {
-        const row = [cat.name];
-        project.vendors.forEach(v => {
-          const totalVal = getCategoryTotalForVendor(cat.id, v.id);
-          row.push(totalVal.toString());
-        });
-        rows.push(row);
+        const note = project.vendorNotes?.[v.id] || "No strategic supplier notes specified.";
+        html += `
+          <tr>
+            <td><b>${v.name}</b></td>
+            <td>${note}</td>
+          </tr>
+        `;
       });
 
-      // Grand TCO summing line
-      const grandTotalRow = ["GRAND TOTAL TCO ESTIMATE"];
-      project.vendors.forEach(v => {
-        const grandVal = getVendorGrandTotal(v.id);
-        grandTotalRow.push(grandVal.toString());
-      });
-      rows.push(grandTotalRow);
+      html += `
+          <tr>
+             <td><b>General Assessment Notes</b></td>
+             <td>${project.generalNotes || "No specific general procurement actions mentioned."}</td>
+          </tr>
+        </tbody>
+      </table>
+      </body>
+      </html>
+      `;
 
-      rows.push([]);
-      rows.push([]);
-
-      // 5. Procurement Commentary & Section Notes
-      rows.push(["SECTION 4: QUALITATIVE NOTES & PROCUREMENT COMMENTARY"]);
-      rows.push(["Vendor Name", "Procurement Analysis Notes"]);
-      project.vendors.forEach(v => {
-        const vendorNote = project.vendorNotes?.[v.id] || "No notes registered.";
-        rows.push([v.name, vendorNote]);
-      });
-
-      rows.push([]);
-      rows.push(["General Project Evaluation Notes", project.generalNotes || "No general procurement notes specified."]);
-
-      // Download triggered via standard Blob strategy
-      const csvString = "\uFEFF" + rows.map(r => r.map(escape).join(",")).join("\n");
-      const blob = new Blob([csvString], { type: "text/csv;charset=utf-8;" });
+      // Download triggered via standard Blob saved with .xls suffix
+      const blob = new Blob([html], { type: "application/vnd.ms-excel;charset=utf-8;" });
       const downloadUrl = URL.createObjectURL(blob);
       const downloadAnchor = document.createElement("a");
       downloadAnchor.setAttribute("href", downloadUrl);
-      const safeName = project.name.toLowerCase().replace(/[^a-z0-9]/g, "_");
-      downloadAnchor.setAttribute("download", `${safeName}_quote_comparison_report.csv`);
+      downloadAnchor.setAttribute("download", fileName);
       document.body.appendChild(downloadAnchor);
       downloadAnchor.click();
       downloadAnchor.remove();
       URL.revokeObjectURL(downloadUrl);
 
-      showToast("CSV sheet exported successfully for Excel/Accounting!");
+      showToast("Professional Excel Book generated and downloaded!");
     } catch (err: any) {
       console.error(err);
-      showToast("Failed to output CSV file link", "error");
+      showToast("Excel export operation failed", "error");
     }
   };
 
@@ -2408,11 +2724,11 @@ export default function App() {
               <FileDown size={14} /> Export Backup
             </button>
             <button 
-              onClick={exportToCsv}
+              onClick={exportToExcel}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition duration-150 cursor-pointer shadow-xs"
-              title="Export currently active project comparison values to Excel/CSV format"
+              title="Export currently active project comparison values to highly styled professional Excel workbook"
             >
-              <FileSpreadsheet size={14} /> Export CSV
+              <FileSpreadsheet size={14} /> Export Excel
             </button>
             <button 
               onClick={triggerFileSelect}
@@ -2444,7 +2760,7 @@ export default function App() {
         {/* Project Selector Sidebar panel / info bar */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200/40 pb-5 print:hidden">
           <div className="flex items-center gap-3">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Comparison Vault:</span>
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Vault:</span>
             <select
               value={activeProjectId}
               onChange={(e) => setActiveProjectId(e.target.value)}
@@ -2520,7 +2836,8 @@ export default function App() {
                       type="text"
                       value={editValue}
                       onChange={(e) => setEditValue(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
+                      onBlur={saveInlineEdit}
+                      onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
                       autoFocus
                       className="text-2xl md:text-3xl font-extrabold text-slate-900 border-b-2 border-indigo-500 focus:outline-hidden w-full pb-1"
                     />
@@ -2560,7 +2877,7 @@ export default function App() {
                     value={editValue}
                     onChange={(e) => setEditValue(e.target.value)}
                     onBlur={saveInlineEdit}
-                    onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
                     autoFocus
                     className="text-xs font-semibold text-slate-800 bg-white border border-indigo-200 px-1 py-0.5 rounded focus:outline-hidden"
                   />
@@ -2584,7 +2901,7 @@ export default function App() {
                     value={editValue}
                     onChange={(e) => setEditValue(e.target.value)}
                     onBlur={saveInlineEdit}
-                    onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
                     autoFocus
                     className="text-xs font-semibold text-slate-800 bg-white border border-indigo-200 px-1 py-0.5 rounded focus:outline-hidden w-20"
                   />
@@ -2617,88 +2934,26 @@ export default function App() {
                 <span className="text-[10px] font-bold text-slate-400 tracking-wider uppercase flex items-center gap-1">
                   <Clock size={11} /> TCO Duration
                 </span>
-                <div className="flex items-center gap-1 mt-0.5 print:hidden">
-                  <button
-                    onClick={() => {
-                      setTcoYears(1);
-                      showToast("Toggled TCO projection to 1 Year");
-                    }}
-                    className={`px-2 py-0.5 text-[10px] font-extrabold rounded transition-all cursor-pointer ${
-                      tcoYears === 1 
-                        ? "bg-indigo-600 text-white shadow-xs" 
-                        : "bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800"
-                    }`}
-                  >
-                    1-Yr
-                  </button>
-                  <button
-                    onClick={() => {
-                      setTcoYears(2);
-                      showToast("Toggled TCO projection to 2 Years");
-                    }}
-                    className={`px-2 py-0.5 text-[10px] font-extrabold rounded transition-all cursor-pointer ${
-                      tcoYears === 2 
-                        ? "bg-indigo-600 text-white shadow-xs" 
-                        : "bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800"
-                    }`}
-                  >
-                    2-Yr
-                  </button>
-                  <button
-                    onClick={() => {
-                      setTcoYears(3);
-                      showToast("Toggled TCO projection to 3 Years");
-                    }}
-                    className={`px-2 py-0.5 text-[10px] font-extrabold rounded transition-all cursor-pointer ${
-                      tcoYears === 3 
-                        ? "bg-indigo-600 text-white shadow-xs" 
-                        : "bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800"
-                    }`}
-                  >
-                    3-Yr
-                  </button>
+                <div className="flex items-center gap-1 mt-1 print:hidden flex-wrap">
+                  {Array.from({ length: maxYearsCount }, (_, i) => i + 1).map((y) => (
+                    <button
+                      key={y}
+                      onClick={() => {
+                        setTcoYears(y);
+                        showToast(`Projection duration modified to ${y} year${y > 1 ? 's' : ''}`);
+                      }}
+                      className={`px-2 py-0.5 text-[10px] font-extrabold rounded-md transition-all cursor-pointer ${
+                        tcoYears === y 
+                          ? "bg-indigo-600 text-white shadow-xs" 
+                          : "bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800"
+                      }`}
+                    >
+                      {y}-Yr
+                    </button>
+                  ))}
                 </div>
                 <span className="text-xs font-semibold text-slate-800 hidden print:inline">
                   {tcoYears} Years TCO
-                </span>
-              </div>
-
-              <div className="flex flex-col gap-0.5">
-                <span className="text-[10px] font-bold text-slate-400 tracking-wider uppercase flex items-center gap-1">
-                  <RefreshCw size={11} className={transposeMatrix ? "rotate-180 duration-300" : "duration-300"} /> Matrix Layout
-                </span>
-                <div className="flex items-center gap-1 mt-0.5 print:hidden">
-                  <button
-                    onClick={() => {
-                      setTransposeMatrix(false);
-                      showToast("Set Standard Layout (Components as Rows)");
-                    }}
-                    className={`px-2 py-0.5 text-[10px] font-extrabold rounded transition-all cursor-pointer ${
-                      !transposeMatrix 
-                        ? "bg-indigo-600 text-white shadow-xs" 
-                        : "bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800"
-                    }`}
-                    title="Normal layout: rows are cost components, columns are vendors"
-                  >
-                    Standard
-                  </button>
-                  <button
-                    onClick={() => {
-                      setTransposeMatrix(true);
-                      showToast("Set Transposed Layout (Vendors as Rows)");
-                    }}
-                    className={`px-2 py-0.5 text-[10px] font-extrabold rounded transition-all cursor-pointer ${
-                      transposeMatrix 
-                        ? "bg-indigo-600 text-white shadow-xs" 
-                        : "bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800"
-                    }`}
-                    title="Transposed layout: rows are vendors, columns are cost components"
-                  >
-                    Transposed
-                  </button>
-                </div>
-                <span className="text-xs font-semibold text-slate-800 hidden print:inline">
-                  {transposeMatrix ? "Transposed" : "Standard"}
                 </span>
               </div>
             </div>
@@ -2719,46 +2974,68 @@ export default function App() {
                   </div>
                   {briefing && briefing.cheapest.total > 0 ? (
                     <div className="flex flex-col gap-2">
-                      <h4 className="text-lg font-black text-slate-900 tracking-tight">
-                        ✨ {briefing.cheapest.name} 
-                      </h4>
-                      <p className="text-[11px] text-slate-500 italic leading-relaxed">
-                        {briefing.comparisonText}
-                      </p>
+                      {/* Cost Components split category-wise */}
+                      <div className="mt-2 border-t border-emerald-200/30 pt-2.5 flex flex-col gap-4 max-h-[250px] overflow-y-auto pr-1">
+                        {project.categories.map(cat => {
+                          // Find cheapest vendor FOR THIS SPECIFIC CATEGORY
+                          const categoryVendors = project.vendors
+                            .map(v => {
+                              const total = getCategoryTotalForVendor(cat.id, v.id);
+                              return { vendor: v, total };
+                            })
+                            .filter(x => x.total > 0)
+                            .sort((a, b) => a.total - b.total);
 
-                      {/* Cost Components split one-by-one */}
-                      <div className="mt-2 border-t border-emerald-200/30 pt-2.5 flex flex-col gap-1.5 max-h-[190px] overflow-y-auto pr-1">
-                        <span className="text-[9px] font-extrabold uppercase tracking-widest text-emerald-800/80 mb-0.5 block">Components Breakdown:</span>
-                        {project.categories.flatMap(cat => 
-                          cat.components.map(comp => {
+                          const bestCatPick = categoryVendors[0] || null;
+                          if (!bestCatPick) return null;
+
+                          // Retrieve components matching best vendor for this category
+                          const validCompItems = cat.components.map(comp => {
                             const isExcluded = isComponentExcluded(cat.id, comp.id);
                             if (isExcluded) return null;
-                            
-                            const rawVal = project.costValues[cat.id]?.[comp.id]?.[briefing.cheapest.id] ?? 0;
+                            const rawVal = project.costValues[cat.id]?.[comp.id]?.[bestCatPick.vendor.id] ?? 0;
                             const factor = getComponentScaleFactor(comp.name, comp.id, tcoYears, cat.components);
                             const scaledVal = rawVal * factor;
                             if (scaledVal === 0) return null;
+                            return { comp, scaledVal, factor };
+                          }).filter((item): item is { comp: CostComponent; scaledVal: number; factor: number } => item !== null);
 
-                            const lowerName = comp.name.toLowerCase();
-                            const isOneTime = lowerName.includes("one-time") || lowerName.includes("onetime") || lowerName.includes("setup") || lowerName.includes("initial") || factor === 1;
-
-                            return (
-                              <div key={`${cat.id}-${comp.id}`} className="flex items-center justify-between text-[11px] font-medium leading-none py-1 border-b border-emerald-100/40">
-                                <span className="text-slate-700 truncate max-w-[150px]" title={`${cat.name} > ${comp.name}`}>
-                                  {comp.name}
-                                </span>
-                                <span className="text-slate-800 font-mono font-bold shrink-0">
-                                  {formatCurrency(scaledVal)}
-                                </span>
+                          return (
+                            <div key={cat.id} className="border-b border-slate-100/40 pb-2 flex flex-col gap-1.5">
+                              {/* Category Header */}
+                              <div className="flex items-center justify-between font-extrabold text-[10px] text-teal-850 tracking-wider uppercase">
+                                <span className="flex items-center gap-1">📁 {cat.name}</span>
                               </div>
-                            );
-                          })
-                        ).filter(Boolean)}
+                              
+                              {/* Category Specific Financial Pick Banner */}
+                              <div className="flex items-center justify-between text-[11px] font-black text-emerald-800 bg-emerald-100/40 border border-emerald-200/45 px-2 py-1 rounded select-none">
+                                <span className="flex items-center gap-1">🏆 {bestCatPick.vendor.name}</span>
+                                <span className="font-mono">{formatCurrency(bestCatPick.total)}</span>
+                              </div>
+
+                              {/* Components */}
+                              {validCompItems.length > 0 && (
+                                <div className="flex flex-col gap-1 pl-2.5 mb-1.5">
+                                  {validCompItems.map(({ comp, scaledVal, factor }) => (
+                                    <div key={`${cat.id}-${comp.id}`} className="flex items-center justify-between text-[10px] font-semibold leading-tight py-0.5 text-slate-655">
+                                      <span className="truncate max-w-[140px]" title={comp.name}>
+                                        • {comp.name} {factor > 1 ? `(x${factor})` : ""}
+                                      </span>
+                                      <span className="font-mono text-slate-700 shrink-0 font-bold">
+                                        {formatCurrency(scaledVal)}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
 
                       {/* Small font Grand Total footer per instructions */}
-                      <div className="mt-3 border-t-2 border-double border-emerald-200 pt-2.5 flex items-center justify-between">
-                        <span className="text-[10px] font-black text-slate-650 uppercase tracking-widest">TCO Total</span>
+                      <div className="mt-3 border-t-2 border-double border-emerald-205 pt-2.5 flex items-center justify-between">
+                        <span className="text-[10px] font-black text-slate-655 uppercase tracking-widest">TCO Total</span>
                         <div className="flex flex-col items-end">
                           <span className="font-mono text-sm font-extrabold text-emerald-800">{formatCurrency(briefing.cheapest.total)}</span>
                           {showDualConversion(briefing.cheapest.total, "text-[9px] text-[#047857] font-bold font-mono")}
@@ -2969,7 +3246,25 @@ export default function App() {
                     {/* Card Header Content */}
                     <div className="p-5 border-b border-slate-100 flex flex-col gap-3 select-none">
                       <div className="flex items-center justify-between gap-2">
-                        <h4 className="text-base font-black text-slate-900 truncate" title={v.name}>{v.name}</h4>
+                        {editingField.type === "vendor-name" && editingField.id === v.id ? (
+                          <input
+                            type="text"
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            onBlur={saveInlineEdit}
+                            onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
+                            autoFocus
+                            className="bg-white border-b border-indigo-500 font-extrabold text-slate-900 text-sm py-0.5 focus:outline-hidden w-28 bg-white"
+                          />
+                        ) : (
+                          <h4 
+                            onClick={() => startEditing("vendor-name", v.id, undefined, v.name)}
+                            className="text-base font-black text-slate-900 truncate hover:text-indigo-600 cursor-pointer border-b border-transparent hover:border-slate-350"
+                            title="Click to rename vendor"
+                          >
+                            {v.name}
+                          </h4>
+                        )}
                         
                         <button
                           onClick={() => recommendVendor(v.id)}
@@ -3043,6 +3338,31 @@ export default function App() {
                             ) : (
                               <span className="text-slate-400 italic text-[11px]">No details entered.</span>
                             )}
+                          </div>
+                        );
+                      })}
+
+                      {/* Category-Specific Qualitative Parameters */}
+                      {project.categories.map((cat) => {
+                        const catRows = getCategoryQualitativeRows(project, cat.id);
+                        return (
+                          <div key={cat.id} className="flex flex-col gap-1.5 border-t border-slate-100 pt-3">
+                            <span className="text-[9px] font-black text-cyan-800 uppercase tracking-widest">{cat.name} Parameter Details</span>
+                            <div className="flex flex-col gap-2.5 pl-1.5">
+                              {catRows.map((row) => {
+                                const val = row.values?.[v.id] || "";
+                                return (
+                                  <div key={row.id} className="flex flex-col gap-0.5 leading-normal">
+                                    <span className="text-[9px] font-bold text-[#0369a1]">{row.name}</span>
+                                    {val ? (
+                                      <p className="text-slate-600 font-sans text-[11px] leading-relaxed text-justify">{val}</p>
+                                    ) : (
+                                      <span className="text-slate-400 italic text-[10px]">No details entered for this category.</span>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
                           </div>
                         );
                       })}
@@ -3157,8 +3477,8 @@ export default function App() {
                               type="text"
                               value={editValue}
                               onChange={(e) => setEditValue(e.target.value)}
-                              onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
                               onBlur={saveInlineEdit}
+                              onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
                               autoFocus
                               className="text-lg font-bold text-slate-900 border-b border-indigo-500 focus:outline-hidden"
                             />
@@ -3206,8 +3526,8 @@ export default function App() {
                                           type="text"
                                           value={editValue}
                                           onChange={(e) => setEditValue(e.target.value)}
-                                          onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
                                           onBlur={saveInlineEdit}
+                                          onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
                                           autoFocus
                                           className="text-right font-extrabold text-slate-900 border-b border-indigo-500 text-xs py-0.5 focus:outline-hidden w-24 bg-white"
                                         />
@@ -3287,8 +3607,8 @@ export default function App() {
                                             type="text"
                                             value={editValue}
                                             onChange={(e) => setEditValue(e.target.value)}
-                                            onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
                                             onBlur={saveInlineEdit}
+                                            onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
                                             autoFocus
                                             className="text-xs font-bold text-slate-900 border-b border-indigo-500 bg-white focus:outline-hidden"
                                           />
@@ -3628,8 +3948,8 @@ export default function App() {
                                             type="text"
                                             value={editValue}
                                             onChange={(e) => setEditValue(e.target.value)}
-                                            onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
                                             onBlur={saveInlineEdit}
+                                            onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
                                             autoFocus
                                             className="text-right font-extrabold text-slate-900 border-b border-indigo-500 text-xs py-0.5 focus:outline-hidden w-24 bg-white"
                                           />
@@ -3693,8 +4013,8 @@ export default function App() {
                                           type="text"
                                           value={editValue}
                                           onChange={(e) => setEditValue(e.target.value)}
-                                          onKeyDown={(e) => e.key === "Enter" && saveInlineEdit()}
                                           onBlur={saveInlineEdit}
+                                          onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
                                           autoFocus
                                           className="text-xs font-bold text-slate-900 border-b border-indigo-500 bg-white focus:outline-hidden"
                                         />
@@ -3933,6 +4253,160 @@ export default function App() {
                       </div>
                     </div>
 
+                    {/* Category-level Financial Value Pick banner */}
+                    {(() => {
+                      const validVendorsWithTotals = project.vendors
+                        .map(v => {
+                          const catTotalVal = getCategoryTotalForVendor(cat.id, v.id);
+                          return { vendor: v, total: catTotalVal };
+                        })
+                        .filter(v => v.total > 0);
+
+                      if (validVendorsWithTotals.length === 0) return null;
+
+                      // Find the lowest total
+                      validVendorsWithTotals.sort((a, b) => a.total - b.total);
+                      const bestPick = validVendorsWithTotals[0];
+                      const isTiedOrOnlyOne = validVendorsWithTotals.length <= 1;
+                      const nextBest = !isTiedOrOnlyOne ? validVendorsWithTotals[1] : null;
+                      const savings = nextBest ? nextBest.total - bestPick.total : 0;
+
+                      return (
+                        <div className="mt-4 p-4 rounded-xl border border-emerald-100 bg-emerald-50/45 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-3xs">
+                          <div className="flex items-center gap-2.5">
+                            <div className="bg-emerald-600 text-white p-1 rounded-md shrink-0 flex items-center justify-center">
+                              <Award size={14} className="stroke-[2.5]" />
+                            </div>
+                            <div className="flex flex-col sm:flex-row sm:items-baseline gap-1 sm:gap-2">
+                              <span className="text-xs font-black text-slate-900">
+                                Financial Value Pick for {cat.name}:
+                              </span>
+                              <span className="text-xs font-extrabold text-emerald-800">
+                                {bestPick.vendor.name} ({formatCurrency(bestPick.total)})
+                              </span>
+                              {showDualConversion(bestPick.total, "text-[10px] font-mono text-emerald-600 font-bold sm:ml-1")}
+                            </div>
+                          </div>
+                          {savings > 0 && (
+                            <div className="text-[10.5px] font-bold text-emerald-700 bg-emerald-100/60 px-2.5 py-1 rounded-md shrink-0 self-start sm:self-center">
+                              ✨ Saves {formatCurrency(savings)} compared to {nextBest?.vendor.name}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Category-Specific Supplying Parameters & Qualitative Milestones */}
+                    <div className="border border-cyan-100/70 bg-cyan-50/15 rounded-2xl p-4 sm:p-6 flex flex-col gap-4 mt-5">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div>
+                          <h5 className="text-xs font-black text-[#0e7490] uppercase tracking-wider flex items-center gap-1.5">
+                            <FileText size={13} className="text-[#0e7490]" /> Supplying Parameters & Qualitative Milestones
+                          </h5>
+                          <p className="text-[10px] sm:text-xs text-slate-500 mt-0.5">Define license configurations, payment schedules, and timeline conditions specifically for the {cat.name} category.</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => addCategoryQualitativeRow(cat.id)}
+                          className="flex items-center gap-1 px-2.5 py-1.5 bg-cyan-600 hover:bg-cyan-700 text-white text-[10px] font-bold rounded-lg transition shadow-3xs cursor-pointer select-none print:hidden shrink-0 self-start sm:self-center"
+                          title="Add custom qualitative parameter row for this category"
+                        >
+                          <Plus size={11} className="stroke-[2.5]" /> Add Category Row
+                        </button>
+                      </div>
+
+                      <div className="overflow-x-auto rounded-xl border border-cyan-100/80 bg-white shadow-3xs">
+                        <table className="w-full text-left border-collapse text-xs">
+                          <thead>
+                            <tr className="bg-[#e4f3f6] border-b border-[#bfe2ea] text-slate-850 font-extrabold tracking-wide">
+                              <th className="px-4 py-2.5 w-64 uppercase text-[#0e7490] select-none text-[10px]">Qualitative Parameter</th>
+                              {project.vendors.map((v) => (
+                                <th key={v.id} className="px-4 py-2.5 text-slate-800 text-[10.5px]">
+                                  {v.name}
+                                </th>
+                              ))}
+                              <th className="px-4 py-2.5 text-center text-[#0e7490] w-20 print:hidden text-[10px] uppercase">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {getCategoryQualitativeRows(project, cat.id).map((row) => (
+                              <tr key={row.id} className="hover:bg-slate-50/50 transition">
+                                <td className="px-4 py-3 text-xs font-bold text-slate-705">
+                                  <input
+                                    type="text"
+                                    value={row.name}
+                                    onChange={(e) => handleCategoryQualitativeRowHeaderChange(cat.id, row.id, "name", e.target.value)}
+                                    className="w-full text-xs font-extrabold text-[#0369a1] bg-transparent border-b border-transparent hover:border-slate-300 focus:border-[#0369a1] px-1 py-0.5 rounded transition focus:outline-hidden"
+                                    placeholder="Parameter Title (e.g. SLA Terms)"
+                                  />
+                                  <textarea
+                                    rows={2}
+                                    value={row.description}
+                                    onChange={(e) => handleCategoryQualitativeRowHeaderChange(cat.id, row.id, "description", e.target.value)}
+                                    className="w-full text-[10px] text-slate-400 font-medium block mt-1 leading-normal bg-transparent border border-transparent hover:border-slate-200 focus:border-[#0369a1] px-1 py-0.5 rounded transition focus:outline-hidden resize-none"
+                                    placeholder="Describe parameter criteria..."
+                                  />
+                                </td>
+                                {project.vendors.map((v) => {
+                                  const value = row.values?.[v.id] ?? "";
+                                  return (
+                                    <td key={v.id} className="px-4 py-3">
+                                      <div className="relative group/field flex flex-col items-stretch">
+                                        <textarea
+                                          rows={2}
+                                          placeholder="Describe details..."
+                                          value={value}
+                                          onChange={(e) => handleCategoryQualitativeRowValueChange(cat.id, row.id, v.id, e.target.value)}
+                                          className="w-full text-xs bg-slate-50 border border-slate-200 focus:bg-white focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 rounded-xl p-2.5 resize-y leading-relaxed text-left font-sans transition-all"
+                                        />
+                                        {value && (
+                                          <button
+                                            onClick={() => {
+                                              setConfirmDialog({
+                                                title: "Clear Parameter Value",
+                                                message: `Are you sure you want to delete the details for ${v.name}?`,
+                                                onConfirm: () => handleCategoryQualitativeRowValueChange(cat.id, row.id, v.id, "")
+                                              });
+                                            }}
+                                            className="absolute top-1.5 right-1.5 opacity-0 group-hover/field:opacity-100 p-1 text-slate-400 hover:text-rose-500 bg-white shadow-xs rounded-md border border-slate-150 transition cursor-pointer"
+                                            title="Clear value"
+                                          >
+                                            <Trash2 size={10} />
+                                          </button>
+                                        )}
+                                      </div>
+                                    </td>
+                                  );
+                                })}
+                                
+                                {/* Actions Column */}
+                                <td className="px-4 py-3 text-center print:hidden border-l border-slate-50">
+                                  <div className="flex items-center justify-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => cloneCategoryQualitativeRow(cat.id, row.id)}
+                                      className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-slate-100 rounded transition cursor-pointer"
+                                      title="Clone row"
+                                    >
+                                      <Copy size={11} />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => deleteCategoryQualitativeRow(cat.id, row.id)}
+                                      className="p-1 text-slate-400 hover:text-rose-600 hover:bg-slate-100 rounded transition cursor-pointer"
+                                      title="Delete row"
+                                    >
+                                      <Trash2 size={11} />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
                     {/* Quick helper controls at table footer context */}
                     <div className="flex items-center gap-4 mt-1 border-t border-slate-100 pt-4 print:hidden">
                       <button
@@ -3981,7 +4455,27 @@ export default function App() {
                     <tr className="bg-[#e4f3f6] border-b border-[#bfe2ea] text-slate-800 text-[11px] font-bold tracking-wider">
                       <th className="px-5 py-3.5 w-76 font-extrabold uppercase text-[#0e7490] select-none">Qualitative Parameter</th>
                       {project.vendors.map((v) => (
-                        <th key={v.id} className="px-5 py-3.5 font-extrabold uppercase text-slate-800 min-w-[250px]">{v.name}</th>
+                        <th key={v.id} className="px-5 py-3.5 font-extrabold uppercase text-slate-800 min-w-[250px]">
+                          {editingField.type === "vendor-name" && editingField.id === v.id ? (
+                            <input
+                              type="text"
+                              value={editValue}
+                              onChange={(e) => setEditValue(e.target.value)}
+                              onBlur={saveInlineEdit}
+                              onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
+                              autoFocus
+                              className="bg-white border-b border-indigo-500 font-extrabold text-slate-900 text-xs py-0.5 focus:outline-hidden w-28 bg-white"
+                            />
+                          ) : (
+                            <span 
+                              onClick={() => startEditing("vendor-name", v.id, undefined, v.name)}
+                              className="cursor-pointer hover:text-indigo-600 border-b border-transparent hover:border-slate-350"
+                              title="Click to rename vendor"
+                            >
+                              {v.name}
+                            </span>
+                          )}
+                        </th>
                       ))}
                       <th className="px-5 py-3.5 text-center font-extrabold uppercase text-[#0e7490] w-24 print:hidden">Actions</th>
                     </tr>
@@ -4096,8 +4590,26 @@ export default function App() {
                       Category
                     </th>
                     {project.vendors.map((v) => (
-                      <th key={v.id} scope="col" className="px-4 py-3.5 text-right text-xs font-bold text-slate-700 uppercase tracking-wider print:text-slate-700">
-                        {v.name}
+                      <th key={v.id} scope="col" className="px-4 py-3.5 text-right text-xs font-bold text-slate-700 uppercase tracking-wider print:text-slate-700 relative group/vhead">
+                        {editingField.type === "vendor-name" && editingField.id === v.id ? (
+                          <input
+                            type="text"
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            onBlur={saveInlineEdit}
+                            onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
+                            autoFocus
+                            className="text-right font-extrabold text-slate-900 border-b border-indigo-500 text-xs py-0.5 focus:outline-hidden w-24 bg-white"
+                          />
+                        ) : (
+                          <span
+                            onClick={() => startEditing("vendor-name", v.id, undefined, v.name)}
+                            className="cursor-pointer hover:text-indigo-600 select-all border-b border-transparent hover:border-slate-300 font-extrabold text-slate-950"
+                            title="Click to rename vendor column"
+                          >
+                            {v.name}
+                          </span>
+                        )}
                       </th>
                     ))}
                   </tr>
@@ -4293,100 +4805,7 @@ export default function App() {
       </>
     )}
 
-        {/* Quotes & General File Attachment Vault at bottom */}
-        <section className="bg-[#f0f7ff]/75 backdrop-blur-xl rounded-2xl border border-blue-200/40 p-6 md:p-8 shadow-xl flex flex-col gap-6 print:hidden mt-8">
-          <div>
-            <span className="text-[11px] font-extrabold uppercase tracking-widest text-[#1d4ed8]">Document Dossier</span>
-            <h3 className="text-base font-bold text-slate-900 tracking-tight flex items-center gap-2 mt-0.5">
-              <UploadCloud size={16} className="text-blue-500" /> Quotes & General Attachments Vault
-            </h3>
-            <p className="text-xs text-slate-500 mt-1">Unified repository for raw PDF quotes, official sheets, supplier proposals, and signed agreements linked across vendor options.</p>
-          </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
-            {/* Drag and drop zone */}
-            <div 
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={(e) => {
-                e.preventDefault();
-                handleFileUpload(e);
-              }}
-              onClick={() => fileVaultRef.current?.click()}
-              className="border-2 border-dashed border-blue-250 hover:border-blue-450 rounded-xl p-6 flex flex-col items-center justify-center gap-2.5 text-center cursor-pointer bg-white hover:bg-blue-50/20 transition duration-150 shadow-2xs group min-h-[160px]"
-            >
-              <UploadCloud size={28} className="text-blue-500 group-hover:scale-110 transition duration-150" />
-              <span className="text-xs font-bold text-slate-800 tracking-tight">Drag Proposals here or Click to Add</span>
-              <span className="text-[10px] text-slate-400 leading-normal max-w-xs">Upload general contract files or vendor RFPs. Linked documents are synchronized in Firebase system (Max 1MB per file).</span>
-            </div>
-            
-            <input 
-              type="file" 
-              ref={fileVaultRef} 
-              onChange={handleFileUpload}
-              multiple
-              className="hidden" 
-            />
-
-            {/* Uploaded Files list */}
-            <div className="flex flex-col gap-2 bg-white/40 border border-slate-100 rounded-xl p-4 min-h-[160px] justify-start">
-              <span className="text-[10px] font-extrabold uppercase tracking-widest text-slate-400 select-none">
-                File Directory ({(project.uploadedFiles || []).length} active dossiers)
-              </span>
-
-              <div className="flex flex-col gap-1.5 max-h-[220px] overflow-y-auto pr-1 mt-1">
-                {(project.uploadedFiles || []).length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-8 text-slate-400 border border-slate-100/30 rounded-xl bg-slate-50/30 select-none">
-                    <span className="text-[11px] italic">No active attachments uploaded yet</span>
-                    <span className="text-[9px] mt-0.5">Use the upload box on the left to add items</span>
-                  </div>
-                ) : (
-                  [...(project.uploadedFiles || [])].reverse().map((file) => (
-                    <div key={file.id} className="flex items-center justify-between border border-blue-100/80 bg-white hover:bg-blue-55/10 rounded-lg px-2.5 py-2 text-xs transition duration-100 gap-2.5 shadow-2xs">
-                      <div className="flex items-center gap-2 overflow-hidden flex-1 select-none">
-                        <File size={14} className="text-blue-500 shrink-0" />
-                        <span className="truncate font-semibold text-slate-850 font-mono text-[10px]" title={file.name}>{file.name}</span>
-                        {file.vendorId ? (
-                          <span className="text-[8px] bg-indigo-50 text-indigo-700 font-bold border border-indigo-100 px-1 rounded-sm shrink-0">
-                            {project.vendors.find(v => v.id === file.vendorId)?.name || 'Linked'}
-                          </span>
-                        ) : (
-                          <span className="text-[8px] bg-slate-100 text-slate-500 font-medium border border-slate-150 px-1 rounded-sm shrink-0">General</span>
-                        )}
-                        <span className="text-[9px] text-slate-450 shrink-0">({(file.size / 1024).toFixed(1)} KB)</span>
-                      </div>
-                      <div className="flex items-center gap-1 shrink-0">
-                        <button 
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); setActiveViewFile(file); }}
-                          className="p-1 hover:bg-blue-50 hover:text-blue-600 text-blue-500 rounded transition cursor-pointer"
-                          title="Interactive View"
-                        >
-                          <Eye size={12} />
-                        </button>
-                        <button 
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); downloadFile(file); }}
-                          className="p-1 hover:bg-slate-100 hover:text-slate-850 text-slate-550 rounded transition cursor-pointer"
-                          title="Download file"
-                        >
-                          <Download size={12} />
-                        </button>
-                        <button 
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); deleteUploadedFile(file.id); }}
-                          className="p-1 hover:bg-[#ffe4e6] hover:text-[#e11d48] text-slate-400 rounded transition cursor-pointer"
-                          title="Remove attachment"
-                        >
-                          <X size={12} />
-                        </button>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-        </section>
 
       </main>
 

@@ -5,3 +5,61 @@
   --font-sans: "Plus Jakarta Sans", "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 12mm 12mm 12mm 12mm;
+  }
+  
+  body {
+    background: #ffffff !important;
+    color: #0f172a !important;
+    font-size: 11px !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Hide interactive controls, utility bars, files vault, and buttons on print */
+  button,
+  select,
+  .print-hide,
+  footer,
+  aside {
+    display: none !important;
+  }
+
+  /* Keep table scroll containers expanded */
+  .overflow-x-auto {
+    overflow-x: visible !important;
+    overflow-y: visible !important;
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  /* Prevent row splitting and orphan headers across pages */
+  tr, section, .card {
+    page-break-inside: avoid !important;
+  }
+  
+  h1, h2, h3, h4, th {
+    page-break-after: avoid !important;
+  }
+
+  /* Force background structures on card headers & stats */
+  .bg-slate-50\/70, .bg-slate-100, .bg-slate-50 {
+    background-color: #f8fafc !important;
+  }
+
+  .bg-[#e0f1f4]\/60 {
+    background-color: #f0fdfa !important;
+  }
+
+  .bg-emerald-50\/40 {
+    background-color: #f0fdf4 !important;
+  }
+
+  .bg-indigo-50 {
+    background-color: #e0e7ff !important;
+  }
+}

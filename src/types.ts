@@ -72,4 +72,5 @@ export interface QuoteProject {
   excludedCostComponents?: Record<string, boolean>;
   monthlyCostTrackers?: Record<string, Record<string, Record<string, MonthlyCostTrackerRow[]>>>; // [catId][compId][vendorId]
   qualitativeRows?: QualitativeRow[];
+  categoryQualitativeRows?: Record<string, QualitativeRow[]>;
 }
