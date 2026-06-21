@@ -3235,15 +3235,35 @@ export default function App() {
                     <div className="p-5 border-b border-slate-100 flex flex-col gap-3 select-none">
                       <div className="flex items-center justify-between gap-2">
                         {editingField.type === "vendor-name" && editingField.id === v.id ? (
-                          <input
-                            type="text"
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            onBlur={saveInlineEdit}
-                            onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
-                            autoFocus
-                            className="bg-white border-b border-indigo-500 font-extrabold text-slate-900 text-sm py-0.5 focus:outline-hidden w-28 bg-white"
-                          />
+                          <div className="flex items-center gap-1 select-none">
+                            <input
+                              type="text"
+                              value={editValue}
+                              onChange={(e) => setEditValue(e.target.value)}
+                              onKeyDown={(e) => { 
+                                if (e.key === "Enter") { saveInlineEdit(); }
+                                if (e.key === "Escape") { setEditingField({ type: null }); }
+                              }}
+                              autoFocus
+                              className="bg-white border-b border-indigo-500 font-extrabold text-slate-900 text-sm py-0.5 focus:outline-hidden w-28 bg-white"
+                            />
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); saveInlineEdit(); }}
+                              className="p-1 text-emerald-600 hover:bg-emerald-50 rounded cursor-pointer transition shrink-0"
+                              title="Save"
+                            >
+                              <Check size={14} className="stroke-[3]" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); setEditingField({ type: null }); }}
+                              className="p-1 text-rose-500 hover:bg-rose-50 rounded cursor-pointer transition shrink-0"
+                              title="Cancel"
+                            >
+                              <X size={14} className="stroke-[3]" />
+                            </button>
+                          </div>
                         ) : (
                           <h4 
                             onClick={() => startEditing("vendor-name", v.id, undefined, v.name)}
@@ -3510,15 +3530,35 @@ export default function App() {
                                   <th key={vendor.id} scope="col" className="px-4 py-3.5 text-right text-xs font-bold text-slate-400 uppercase tracking-widest relative group/vhead">
                                     <div className="flex items-center justify-end gap-1 group">
                                       {editingField.type === "vendor-name" && editingField.id === vendor.id ? (
-                                        <input
-                                          type="text"
-                                          value={editValue}
-                                          onChange={(e) => setEditValue(e.target.value)}
-                                          onBlur={saveInlineEdit}
-                                          onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
-                                          autoFocus
-                                          className="text-right font-extrabold text-slate-900 border-b border-indigo-500 text-xs py-0.5 focus:outline-hidden w-24 bg-white"
-                                        />
+                                        <div className="flex items-center gap-1 select-none text-right justify-end">
+                                          <input
+                                            type="text"
+                                            value={editValue}
+                                            onChange={(e) => setEditValue(e.target.value)}
+                                            onKeyDown={(e) => { 
+                                              if (e.key === "Enter") { saveInlineEdit(); }
+                                              if (e.key === "Escape") { setEditingField({ type: null }); }
+                                            }}
+                                            autoFocus
+                                            className="text-right font-extrabold text-slate-900 border-b border-indigo-500 text-xs py-0.5 focus:outline-hidden w-24 bg-white"
+                                          />
+                                          <button
+                                            type="button"
+                                            onClick={(e) => { e.stopPropagation(); saveInlineEdit(); }}
+                                            className="p-1 text-emerald-600 hover:bg-emerald-50 rounded cursor-pointer transition shrink-0"
+                                            title="Save"
+                                          >
+                                            <Check size={11} className="stroke-[3]" />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={(e) => { e.stopPropagation(); setEditingField({ type: null }); }}
+                                            className="p-1 text-rose-500 hover:bg-rose-50 rounded cursor-pointer transition shrink-0"
+                                            title="Cancel"
+                                          >
+                                            <X size={11} className="stroke-[3]" />
+                                          </button>
+                                        </div>
                                       ) : (
                                         <span
                                           onClick={() => startEditing("vendor-name", vendor.id, undefined, vendor.name)}
@@ -3997,15 +4037,35 @@ export default function App() {
                                     {/* Vendor label */}
                                     <td className="px-4 py-3 text-sm font-medium text-slate-800">
                                       {editingField.type === "vendor-name" && editingField.id === vendor.id ? (
-                                        <input
-                                          type="text"
-                                          value={editValue}
-                                          onChange={(e) => setEditValue(e.target.value)}
-                                          onBlur={saveInlineEdit}
-                                          onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
-                                          autoFocus
-                                          className="text-xs font-bold text-slate-900 border-b border-indigo-500 bg-white focus:outline-hidden"
-                                        />
+                                        <div className="flex items-center gap-1 select-none">
+                                          <input
+                                            type="text"
+                                            value={editValue}
+                                            onChange={(e) => setEditValue(e.target.value)}
+                                            onKeyDown={(e) => { 
+                                              if (e.key === "Enter") { saveInlineEdit(); }
+                                              if (e.key === "Escape") { setEditingField({ type: null }); }
+                                            }}
+                                            autoFocus
+                                            className="text-xs font-bold text-slate-900 border-b border-indigo-500 bg-white focus:outline-hidden"
+                                          />
+                                          <button
+                                            type="button"
+                                            onClick={(e) => { e.stopPropagation(); saveInlineEdit(); }}
+                                            className="p-1 text-emerald-600 hover:bg-emerald-50 rounded cursor-pointer transition shrink-0"
+                                            title="Save"
+                                          >
+                                            <Check size={11} className="stroke-[3]" />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={(e) => { e.stopPropagation(); setEditingField({ type: null }); }}
+                                            className="p-1 text-rose-500 hover:bg-rose-50 rounded cursor-pointer transition shrink-0"
+                                            title="Cancel"
+                                          >
+                                            <X size={11} className="stroke-[3]" />
+                                          </button>
+                                        </div>
                                       ) : (
                                         <div className="flex flex-col gap-1.5">
                                           <span 
@@ -4311,15 +4371,35 @@ export default function App() {
                               {project.vendors.map((v) => (
                                 <th key={v.id} className="px-4 py-2.5 text-slate-800 text-[10.5px] relative group/vhead">
                                   {editingField.type === "vendor-name" && editingField.id === v.id ? (
-                                    <input
-                                      type="text"
-                                      value={editValue}
-                                      onChange={(e) => setEditValue(e.target.value)}
-                                      onBlur={saveInlineEdit}
-                                      onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
-                                      autoFocus
-                                      className="bg-white border-b border-indigo-500 font-extrabold text-slate-900 text-xs py-0.5 focus:outline-hidden w-24 bg-white text-left"
-                                    />
+                                    <div className="flex items-center gap-1 select-none justify-start">
+                                      <input
+                                        type="text"
+                                        value={editValue}
+                                        onChange={(e) => setEditValue(e.target.value)}
+                                        onKeyDown={(e) => { 
+                                          if (e.key === "Enter") { saveInlineEdit(); }
+                                          if (e.key === "Escape") { setEditingField({ type: null }); }
+                                        }}
+                                        autoFocus
+                                        className="bg-white border-b border-indigo-500 font-extrabold text-slate-900 text-xs py-0.5 focus:outline-hidden w-24 bg-white text-left"
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={(e) => { e.stopPropagation(); saveInlineEdit(); }}
+                                        className="p-1 text-emerald-600 hover:bg-emerald-50 rounded cursor-pointer transition shrink-0"
+                                        title="Save"
+                                      >
+                                        <Check size={11} className="stroke-[3]" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => { e.stopPropagation(); setEditingField({ type: null }); }}
+                                        className="p-1 text-rose-500 hover:bg-rose-50 rounded cursor-pointer transition shrink-0"
+                                        title="Cancel"
+                                      >
+                                        <X size={11} className="stroke-[3]" />
+                                      </button>
+                                    </div>
                                   ) : (
                                     <span
                                       onClick={() => startEditing("vendor-name", v.id, undefined, v.name)}
@@ -4463,15 +4543,35 @@ export default function App() {
                       {project.vendors.map((v) => (
                         <th key={v.id} className="px-5 py-3.5 font-extrabold uppercase text-slate-800 min-w-[250px]">
                           {editingField.type === "vendor-name" && editingField.id === v.id ? (
-                            <input
-                              type="text"
-                              value={editValue}
-                              onChange={(e) => setEditValue(e.target.value)}
-                              onBlur={saveInlineEdit}
-                              onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
-                              autoFocus
-                              className="bg-white border-b border-indigo-500 font-extrabold text-slate-900 text-xs py-0.5 focus:outline-hidden w-28 bg-white"
-                            />
+                            <div className="flex items-center gap-1 select-none">
+                              <input
+                                type="text"
+                                value={editValue}
+                                onChange={(e) => setEditValue(e.target.value)}
+                                onKeyDown={(e) => { 
+                                  if (e.key === "Enter") { saveInlineEdit(); }
+                                  if (e.key === "Escape") { setEditingField({ type: null }); }
+                                }}
+                                autoFocus
+                                className="bg-white border-b border-indigo-500 font-extrabold text-slate-900 text-xs py-0.5 focus:outline-hidden w-28 bg-white"
+                              />
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); saveInlineEdit(); }}
+                                className="p-1 text-emerald-600 hover:bg-emerald-50 rounded cursor-pointer transition shrink-0"
+                                title="Save"
+                              >
+                                <Check size={11} className="stroke-[3]" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); setEditingField({ type: null }); }}
+                                className="p-1 text-rose-500 hover:bg-rose-50 rounded cursor-pointer transition shrink-0"
+                                title="Cancel"
+                              >
+                                <X size={11} className="stroke-[3]" />
+                              </button>
+                            </div>
                           ) : (
                             <span 
                               onClick={() => startEditing("vendor-name", v.id, undefined, v.name)}
@@ -4598,19 +4698,39 @@ export default function App() {
                     {project.vendors.map((v) => (
                       <th key={v.id} scope="col" className="px-4 py-3.5 text-right text-xs font-bold text-slate-700 uppercase tracking-wider print:text-slate-700 relative group/vhead">
                         {editingField.type === "vendor-name" && editingField.id === v.id ? (
-                          <input
-                            type="text"
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            onBlur={saveInlineEdit}
-                            onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
-                            autoFocus
-                            className="text-right font-extrabold text-slate-900 border-b border-indigo-500 text-xs py-0.5 focus:outline-hidden w-24 bg-white"
-                          />
+                          <div className="flex items-center gap-1 select-none text-right justify-end">
+                            <input
+                              type="text"
+                              value={editValue}
+                              onChange={(e) => setEditValue(e.target.value)}
+                              onKeyDown={(e) => { 
+                                if (e.key === "Enter") { saveInlineEdit(); }
+                                if (e.key === "Escape") { setEditingField({ type: null }); }
+                              }}
+                              autoFocus
+                              className="text-right font-extrabold text-slate-900 border-b border-indigo-500 text-xs py-0.5 focus:outline-hidden w-24 bg-white"
+                            />
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); saveInlineEdit(); }}
+                              className="p-1 text-emerald-600 hover:bg-emerald-50 rounded cursor-pointer transition shrink-0"
+                              title="Save"
+                            >
+                              <Check size={11} className="stroke-[3]" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); setEditingField({ type: null }); }}
+                              className="p-1 text-rose-500 hover:bg-rose-50 rounded cursor-pointer transition shrink-0"
+                              title="Cancel"
+                            >
+                              <X size={11} className="stroke-[3]" />
+                            </button>
+                          </div>
                         ) : (
                           <span
                             onClick={() => startEditing("vendor-name", v.id, undefined, v.name)}
-                            className="cursor-pointer hover:text-indigo-600 select-all border-b border-transparent hover:border-slate-300 font-extrabold text-slate-950"
+                            className="cursor-pointer hover:text-indigo-600 select-all border-b border-transparent hover:border-slate-300 font-extrabold text-slate-955"
                             title="Click to rename vendor column"
                           >
                             {v.name}
