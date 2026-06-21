@@ -200,19 +200,7 @@ export default function App() {
 
   // Helper to dynamically calculate maximum TCO years based on modern components names
   const getMaximumAvailableYearsCount = (p: QuoteProject): number => {
-    let maxYear = 3; // Start from at least 3 years as standard base
-    p.categories?.forEach(cat => {
-      cat.components?.forEach(comp => {
-        const matchYear = comp.name.match(/(?:Year|Yr|Y)\s*(\d+)/i) || comp.id.match(/(?:year|yr|y)-?(\d+)/i);
-        if (matchYear) {
-          const yr = parseInt(matchYear[1], 10);
-          if (yr > maxYear) {
-            maxYear = yr;
-          }
-        }
-      });
-    });
-    return maxYear;
+    return 3; // Capped at exactly 3 years maximum as requested
   };
 
   const maxYearsCount = getMaximumAvailableYearsCount(project);
@@ -4321,8 +4309,26 @@ export default function App() {
                             <tr className="bg-[#e4f3f6] border-b border-[#bfe2ea] text-slate-850 font-extrabold tracking-wide">
                               <th className="px-4 py-2.5 w-64 uppercase text-[#0e7490] select-none text-[10px]">Qualitative Parameter</th>
                               {project.vendors.map((v) => (
-                                <th key={v.id} className="px-4 py-2.5 text-slate-800 text-[10.5px]">
-                                  {v.name}
+                                <th key={v.id} className="px-4 py-2.5 text-slate-800 text-[10.5px] relative group/vhead">
+                                  {editingField.type === "vendor-name" && editingField.id === v.id ? (
+                                    <input
+                                      type="text"
+                                      value={editValue}
+                                      onChange={(e) => setEditValue(e.target.value)}
+                                      onBlur={saveInlineEdit}
+                                      onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
+                                      autoFocus
+                                      className="bg-white border-b border-indigo-500 font-extrabold text-slate-900 text-xs py-0.5 focus:outline-hidden w-24 bg-white text-left"
+                                    />
+                                  ) : (
+                                    <span
+                                      onClick={() => startEditing("vendor-name", v.id, undefined, v.name)}
+                                      className="cursor-pointer hover:text-indigo-600 border-b border-transparent hover:border-slate-350 select-all font-extrabold text-slate-900"
+                                      title="Click to rename vendor"
+                                    >
+                                      {v.name}
+                                    </span>
+                                  )}
                                 </th>
                               ))}
                               <th className="px-4 py-2.5 text-center text-[#0e7490] w-20 print:hidden text-[10px] uppercase">Actions</th>
