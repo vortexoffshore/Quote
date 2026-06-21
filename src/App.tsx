@@ -34,7 +34,7 @@ import {
 } from "lucide-react";
 import { doc, setDoc, getDocs, collection, deleteDoc } from "firebase/firestore";
 import { db, isFirebaseConfigured, handleFirestoreError, OperationType } from "./firebase";
-import { QuoteProject, Category, CostComponent, Vendor, UploadedFile } from "./types";
+import { QuoteProject, Category, CostComponent, Vendor, UploadedFile, MonthlyCostTrackerRow, QualitativeRow } from "./types";
 import { DEFAULT_PROJECTS, CURRENCY_SYMBOLS, CATEGORY_COLORS } from "./sampleData";
 
 export default function App() {
@@ -60,6 +60,15 @@ export default function App() {
   });
 
   const [showGrandTotalBreakdown, setShowGrandTotalBreakdown] = useState<boolean>(true);
+
+  // Expanded One-Year cost trackers status mapped by: expandedTrackers[catId][compId] = boolean
+  const [expandedTrackers, setExpandedTrackers] = useState<Record<string, Record<string, boolean>>>({});
+
+  // Active vendor selection inside cost trackers: trackerVendorSelections[`${catId}-${compId}`] = vendorId
+  const [trackerVendorSelections, setTrackerVendorSelections] = useState<Record<string, string>>({});
+
+  // Modal Fallback tracker state (e.g. if they trigger editing in transposed layout where rows are vendors)
+  const [modalTrackerInfo, setModalTrackerInfo] = useState<{ catId: string; compId: string; compName: string } | null>(null);
 
   const [isSyncing, setIsSyncing] = useState(false);
   const [isUnsavedCloud, setIsUnsavedCloud] = useState(false);
@@ -993,6 +1002,121 @@ export default function App() {
     updateCurrentProject(updated);
   };
 
+  const getProjectQualitativeRows = (p: QuoteProject): QualitativeRow[] => {
+    if (p.qualitativeRows && p.qualitativeRows.length > 0) {
+      return p.qualitativeRows;
+    }
+    const vens = p.vendors || [];
+    const defaultRows: QualitativeRow[] = [
+      {
+        id: "plan-model",
+        name: "Plan / Model Description",
+        description: "Software tier details, seat allotments, licenses, or specific server models.",
+        values: vens.reduce((acc, v) => {
+          acc[v.id] = p.vendorPlans?.[v.id] || "";
+          return acc;
+        }, {} as Record<string, string>)
+      },
+      {
+        id: "payment-milestones",
+        name: "Payment Milestones",
+        description: "Incremental payout milestones (e.g., 30% advance, progress payments, or final acceptance).",
+        values: vens.reduce((acc, v) => {
+          acc[v.id] = p.paymentMilestones?.[v.id] || "";
+          return acc;
+        }, {} as Record<string, string>)
+      },
+      {
+        id: "onboarding-timeline",
+        name: "Onboarding Timeline",
+        description: "Estimated system setup, cloud migration, key training schedules.",
+        values: vens.reduce((acc, v) => {
+          acc[v.id] = p.onboardingTimelines?.[v.id] || "";
+          return acc;
+        }, {} as Record<string, string>)
+      }
+    ];
+    return defaultRows;
+  };
+
+  const handleQualitativeRowHeaderChange = (rowId: string, field: "name" | "description", val: string) => {
+    const currentRows = getProjectQualitativeRows(project);
+    const updatedRows = currentRows.map(row => {
+      if (row.id === rowId) {
+        return { ...row, [field]: val };
+      }
+      return row;
+    });
+    updateCurrentProject({ ...project, qualitativeRows: updatedRows });
+  };
+
+  const handleQualitativeRowValueChange = (rowId: string, vendorId: string, val: string) => {
+    const currentRows = getProjectQualitativeRows(project);
+    const updatedRows = currentRows.map(row => {
+      if (row.id === rowId) {
+        return {
+          ...row,
+          values: {
+            ...(row.values || {}),
+            [vendorId]: val
+          }
+        };
+      }
+      return row;
+    });
+    updateCurrentProject({ ...project, qualitativeRows: updatedRows });
+  };
+
+  const cloneQualitativeRow = (rowId: string) => {
+    const currentRows = getProjectQualitativeRows(project);
+    const targetRow = currentRows.find(r => r.id === rowId);
+    if (!targetRow) return;
+
+    const randomHex = Math.random().toString(36).substring(2, 7);
+    const clonedRow: QualitativeRow = {
+      id: `qual-${randomHex}`,
+      name: `${targetRow.name} (Clone)`,
+      description: targetRow.description,
+      values: JSON.parse(JSON.stringify(targetRow.values || {}))
+    };
+
+    updateCurrentProject({ ...project, qualitativeRows: [...currentRows, clonedRow] });
+    showToast(`Cloned qualitative parameter "${targetRow.name}"`);
+  };
+
+  const deleteQualitativeRow = (rowId: string) => {
+    const currentRows = getProjectQualitativeRows(project);
+    const targetRow = currentRows.find(r => r.id === rowId);
+    if (!targetRow) return;
+
+    setConfirmDialog({
+      title: "Delete Qualitative Parameter",
+      message: `Are you sure you want to delete "${targetRow.name || "this parameter"}"? All suppliers' descriptions for this parameter will be deleted.`,
+      onConfirm: () => {
+        const remaining = currentRows.filter(r => r.id !== rowId);
+        updateCurrentProject({ ...project, qualitativeRows: remaining });
+        showToast(`Deleted qualitative parameter "${targetRow.name}"`);
+      }
+    });
+  };
+
+  const addQualitativeRow = () => {
+    const currentRows = getProjectQualitativeRows(project);
+    const randomHex = Math.random().toString(36).substring(2, 7);
+    const newRow: QualitativeRow = {
+      id: `qual-${randomHex}`,
+      name: `New Parameter ${currentRows.length + 1}`,
+      description: "Description of the criteria / milestone terms.",
+      values: project.vendors.reduce((acc, v) => {
+        acc[v.id] = "";
+        return acc;
+      }, {} as Record<string, string>)
+    };
+
+    updateCurrentProject({ ...project, qualitativeRows: [...currentRows, newRow] });
+    showToast("Added new qualitative parameter row!");
+  };
+
   const recommendVendor = (vId: string) => {
     const updated: QuoteProject = {
       ...project,
@@ -1235,6 +1359,609 @@ export default function App() {
     updateCurrentProject(updated);
     showToast(`Deleted component row "${compName}"`);
   };
+
+  // Clone Cost Component Row (Clone annual repeat, incrementing years)
+  const cloneCostComponent = (catId: string, compId: string, compName: string) => {
+    const cat = project.categories.find(c => c.id === catId);
+    if (!cat) return;
+
+    const originalComp = cat.components.find(comp => comp.id === compId);
+    if (!originalComp) return;
+
+    const randomHex = Math.random().toString(36).substring(2, 7);
+    const newCompId = `component-${randomHex}`;
+    
+    let newCompName = `${originalComp.name} (Clone)`;
+    const matchYear = originalComp.name.match(/Year\s*(\d+)/i) || originalComp.name.match(/Yr\s*(\d+)/i);
+    if (matchYear) {
+      const year = parseInt(matchYear[1], 10);
+      newCompName = originalComp.name.replace(/Year\s*\d+/i, `Year ${year + 1}`).replace(/Yr\s*\d+/i, `Yr ${year + 1}`);
+    }
+
+    // Add component to category immediately after original
+    const updatedCategories = project.categories.map(c => {
+      if (c.id === catId) {
+        const idx = c.components.findIndex(comp => comp.id === compId);
+        const newComponents = [...c.components];
+        newComponents.splice(idx + 1, 0, { id: newCompId, name: newCompName });
+        return {
+          ...c,
+          components: newComponents
+        };
+      }
+      return c;
+    });
+
+    const updatedCostValues = JSON.parse(JSON.stringify(project.costValues));
+    if (!updatedCostValues[catId]) updatedCostValues[catId] = {};
+    updatedCostValues[catId][newCompId] = {};
+    project.vendors.forEach(v => {
+      const parentVal = project.costValues[catId]?.[compId]?.[v.id] ?? 0;
+      updatedCostValues[catId][newCompId][v.id] = parentVal;
+    });
+
+    // Clone monthly cost trackers if any exist
+    const monthlyCostTrackers = JSON.parse(JSON.stringify(project.monthlyCostTrackers || {}));
+    project.vendors.forEach(v => {
+      const sourceTracker = project.monthlyCostTrackers?.[catId]?.[compId]?.[v.id];
+      if (sourceTracker) {
+        if (!monthlyCostTrackers[catId]) monthlyCostTrackers[catId] = {};
+        if (!monthlyCostTrackers[catId][newCompId]) monthlyCostTrackers[catId][newCompId] = {};
+        monthlyCostTrackers[catId][newCompId][v.id] = sourceTracker.map((row: any) => ({
+          ...row,
+          id: `row-${Math.random().toString(36).substring(2, 7)}`
+        }));
+      }
+    });
+
+    const updated: QuoteProject = {
+      ...project,
+      categories: updatedCategories,
+      costValues: updatedCostValues,
+      monthlyCostTrackers
+    };
+
+    updateCurrentProject(updated);
+    showToast(`Cloned "${compName}" into "${newCompName}"`);
+    
+    setTimeout(() => {
+      startEditing("component-name", catId, newCompId, newCompName);
+    }, 100);
+  };
+
+  const toggleTrackerExpanded = (catId: string, compId: string) => {
+    setExpandedTrackers(prev => {
+      const catPrev = prev[catId] || {};
+      return {
+        ...prev,
+        [catId]: {
+          ...catPrev,
+          [compId]: !catPrev[compId]
+        }
+      };
+    });
+  };
+
+  const handleVendorTrackerToggle = (catId: string, compId: string, vendorId: string) => {
+    const isCurrentlyExpanded = expandedTrackers[catId]?.[compId];
+    const currentSelectedVendor = trackerVendorSelections[`${catId}-${compId}`] || project.vendors[0]?.id || "";
+    
+    if (isCurrentlyExpanded && currentSelectedVendor === vendorId) {
+      toggleTrackerExpanded(catId, compId);
+    } else {
+      if (!isCurrentlyExpanded) {
+        toggleTrackerExpanded(catId, compId);
+      }
+      setTrackerVendorSelections(prev => ({
+        ...prev,
+        [`${catId}-${compId}`]: vendorId
+      }));
+    }
+  };
+
+  const getMonthlyTrackerRows = (catId: string, compId: string, vendorId: string): MonthlyCostTrackerRow[] => {
+    if (project.monthlyCostTrackers?.[catId]?.[compId]?.[vendorId]) {
+      return project.monthlyCostTrackers[catId][compId][vendorId];
+    }
+    
+    // Return default categories based on the PDF screenshot
+    const defaultCategories = [
+      "Hardware",
+      "Software Licenses",
+      "Cloud Services",
+      "Consultancy",
+      "Manpower",
+      "Training",
+      "Travel & Accommodation",
+      "Miscellaneous",
+      "Contingency"
+    ];
+    
+    return defaultCategories.map((name, index) => ({
+      id: `row-${name.toLowerCase().replace(/[^a-z0-9]/g, "")}-${index}`,
+      category: name,
+      annualBudget: 0,
+      months: Array(12).fill(0),
+      description: "",
+      excluded: false
+    }));
+  };
+
+  const updateMonthlyTracker = (
+    catId: string,
+    compId: string,
+    vendorId: string,
+    updatedRows: MonthlyCostTrackerRow[]
+  ) => {
+    const syncedRows = updatedRows.map(row => {
+      const monthSum = row.months.reduce((a, b) => a + b, 0);
+      if (monthSum > 0) {
+        return {
+          ...row,
+          annualBudget: monthSum
+        };
+      }
+      return row;
+    });
+
+    const updatedTrackers = JSON.parse(JSON.stringify(project.monthlyCostTrackers || {}));
+    if (!updatedTrackers[catId]) updatedTrackers[catId] = {};
+    if (!updatedTrackers[catId][compId]) updatedTrackers[catId][compId] = {};
+    updatedTrackers[catId][compId][vendorId] = syncedRows;
+
+    const activeRowsSum = syncedRows
+      .filter(row => !row.excluded)
+      .reduce((sum, row) => sum + row.annualBudget, 0);
+
+    const updatedCostValues = JSON.parse(JSON.stringify(project.costValues));
+    if (!updatedCostValues[catId]) updatedCostValues[catId] = {};
+    if (!updatedCostValues[catId][compId]) updatedCostValues[catId][compId] = {};
+    updatedCostValues[catId][compId][vendorId] = activeRowsSum;
+
+    const updated: QuoteProject = {
+      ...project,
+      monthlyCostTrackers: updatedTrackers,
+      costValues: updatedCostValues
+    };
+
+    updateCurrentProject(updated);
+  };
+
+  // Controlled input component for month-wise amounts that updates parent only on Enter or Blur
+  function MonthAmountInput({ 
+    value, 
+    onSave,
+    disabled
+  }: { 
+    value: number; 
+    onSave: (val: number) => void;
+    disabled?: boolean;
+  }) {
+    const [localVal, setLocalVal] = useState(value === 0 ? "0" : value.toString());
+
+    useEffect(() => {
+      setLocalVal(value === 0 ? "0" : value.toString());
+    }, [value]);
+
+    const commitValue = () => {
+      const cleanStr = localVal.replace(/[^0-9.-]/g, "");
+      const parsed = parseFloat(cleanStr);
+      const finalVal = isNaN(parsed) ? 0 : parsed;
+      onSave(finalVal);
+      setLocalVal(finalVal === 0 ? "0" : finalVal.toString());
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === "Enter") {
+        commitValue();
+        e.currentTarget.blur();
+      } else if (e.key === "Escape") {
+        setLocalVal(value === 0 ? "0" : value.toString());
+        e.currentTarget.blur();
+      }
+    };
+
+    return (
+      <input
+        type="text"
+        disabled={disabled}
+        value={localVal}
+        onChange={(e) => setLocalVal(e.target.value)}
+        onBlur={commitValue}
+        onKeyDown={handleKeyDown}
+        className={`text-right w-11 bg-transparent border-b border-transparent hover:border-slate-200 focus:border-cyan-500 py-0.5 px-0.5 text-[11px] font-bold transition rounded focus:bg-cyan-50/30 ${
+          disabled ? "text-slate-350 line-through cursor-not-allowed" : "text-slate-700 focus:text-slate-900"
+        }`}
+      />
+    );
+  }
+
+  // Controlled input component for tracker row Annual Budget that updates parent on Enter or Blur
+  function TrackerAnnualBudgetInput({ 
+    value, 
+    onSave,
+    disabled
+  }: { 
+    value: number; 
+    onSave: (val: number) => void;
+    disabled?: boolean;
+  }) {
+    const [localVal, setLocalVal] = useState(value === 0 ? "0" : value.toString());
+
+    useEffect(() => {
+      setLocalVal(value === 0 ? "0" : value.toString());
+    }, [value]);
+
+    const commitValue = () => {
+      const cleanStr = localVal.replace(/[^0-9.-]/g, "");
+      const parsed = parseFloat(cleanStr);
+      const finalVal = isNaN(parsed) ? 0 : parsed;
+      onSave(finalVal);
+      setLocalVal(finalVal === 0 ? "0" : finalVal.toString());
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === "Enter") {
+        commitValue();
+        e.currentTarget.blur();
+      } else if (e.key === "Escape") {
+        setLocalVal(value === 0 ? "0" : value.toString());
+        e.currentTarget.blur();
+      }
+    };
+
+    return (
+      <input
+        type="text"
+        disabled={disabled}
+        value={localVal}
+        onChange={(e) => setLocalVal(e.target.value)}
+        onBlur={commitValue}
+        onKeyDown={handleKeyDown}
+        className={`text-right w-20 bg-transparent border-b border-transparent hover:border-slate-200 focus:border-indigo-500 px-0.5 py-0.5 font-mono font-black transition rounded focus:bg-slate-50/50 ${
+          disabled ? "line-through text-slate-400 cursor-not-allowed" : "text-slate-800"
+        }`}
+      />
+    );
+  }
+
+  // Controlled input component for tracker row category title that updates parent on Enter or Blur
+  function TrackerRowCategoryInput({
+    value,
+    onSave,
+    disabled
+  }: {
+    value: string;
+    onSave: (val: string) => void;
+    disabled?: boolean;
+  }) {
+    const [localVal, setLocalVal] = useState(value);
+
+    useEffect(() => {
+      setLocalVal(value);
+    }, [value]);
+
+    const commitValue = () => {
+      onSave(localVal);
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === "Enter") {
+        commitValue();
+        e.currentTarget.blur();
+      } else if (e.key === "Escape") {
+        setLocalVal(value);
+        e.currentTarget.blur();
+      }
+    };
+
+    return (
+      <input
+        type="text"
+        disabled={disabled}
+        value={localVal}
+        onChange={(e) => setLocalVal(e.target.value)}
+        onBlur={commitValue}
+        onKeyDown={handleKeyDown}
+        className={`w-full bg-transparent border-b border-transparent hover:border-slate-200 focus:border-indigo-500 py-0.5 px-0.5 font-bold text-slate-800 focus:text-slate-950 text-xs transition-colors duration-150 ${
+          disabled ? "line-through italic text-slate-400 cursor-not-allowed" : ""
+        }`}
+        placeholder="Category Title"
+      />
+    );
+  }
+
+  // Controlled input component for tracker row description/notes that updates parent on Enter or Blur
+  function TrackerRowDescriptionInput({
+    value,
+    onSave,
+    disabled
+  }: {
+    value: string;
+    onSave: (val: string) => void;
+    disabled?: boolean;
+  }) {
+    const [localVal, setLocalVal] = useState(value);
+
+    useEffect(() => {
+      setLocalVal(value);
+    }, [value]);
+
+    const commitValue = () => {
+      onSave(localVal);
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === "Enter") {
+        commitValue();
+        e.currentTarget.blur();
+      } else if (e.key === "Escape") {
+        setLocalVal(value);
+        e.currentTarget.blur();
+      }
+    };
+
+    return (
+      <input
+        type="text"
+        disabled={disabled}
+        value={localVal}
+        onChange={(e) => setLocalVal(e.target.value)}
+        onBlur={commitValue}
+        onKeyDown={handleKeyDown}
+        className="w-full bg-transparent border-b border-transparent hover:border-slate-200 focus:border-indigo-500 py-0.5 px-0.5 text-slate-500 text-[11px] focus:text-slate-800 transition"
+        placeholder=""
+      />
+    );
+  }
+
+  // One-Year Project Cost Tracker Subcomponent (Renders the Monthly budget table based on PDF/OCR)
+  function MonthlyCostTrackerComponent({ catId, compId, compName }: { catId: string; compId: string; compName: string }) {
+    const selectedVendorId = trackerVendorSelections[`${catId}-${compId}`] || project.vendors[0]?.id || "";
+    const activeVendor = project.vendors.find(v => v.id === selectedVendorId) || project.vendors[0];
+    
+    if (!activeVendor) {
+      return <div className="text-xs text-rose-500 font-semibold p-2">Please add a vendor first to begin detailed tracking.</div>;
+    }
+    
+    const rows = getMonthlyTrackerRows(catId, compId, activeVendor.id);
+    
+    const selectVendor = (vendorId: string) => {
+      setTrackerVendorSelections(prev => ({
+        ...prev,
+        [`${catId}-${compId}`]: vendorId
+      }));
+    };
+
+    const handleFieldChange = (rowId: string, field: keyof MonthlyCostTrackerRow, value: any) => {
+      const updatedRows = rows.map(r => {
+        if (r.id === rowId) {
+          return { ...r, [field]: value };
+        }
+        return r;
+      });
+      updateMonthlyTracker(catId, compId, activeVendor.id, updatedRows);
+    };
+
+    const handleMonthChange = (rowId: string, monthIndex: number, val: number) => {
+      const updatedRows = rows.map(r => {
+        if (r.id === rowId) {
+          const freshMonths = [...r.months];
+          freshMonths[monthIndex] = val;
+          return { ...r, months: freshMonths };
+        }
+        return r;
+      });
+      updateMonthlyTracker(catId, compId, activeVendor.id, updatedRows);
+    };
+
+    const toggleRowExcluded = (rowId: string) => {
+      const updatedRows = rows.map(r => {
+        if (r.id === rowId) {
+          return { ...r, excluded: !r.excluded };
+        }
+        return r;
+      });
+      updateMonthlyTracker(catId, compId, activeVendor.id, updatedRows);
+    };
+
+    const deleteRow = (rowId: string, rowName: string) => {
+      const updatedRows = rows.filter(r => r.id !== rowId);
+      updateMonthlyTracker(catId, compId, activeVendor.id, updatedRows);
+      showToast(`Removed "${rowName || "Cost Category"}" row from monthly tracker.`);
+    };
+
+    const addCustomRow = () => {
+      const newId = `row-custom-${Math.random().toString(36).substring(2, 7)}`;
+      const newRow: MonthlyCostTrackerRow = {
+        id: newId,
+        category: "Custom Cost Category",
+        annualBudget: 0,
+        months: Array(12).fill(0),
+        description: "",
+        excluded: false
+      };
+      updateMonthlyTracker(catId, compId, activeVendor.id, [...rows, newRow]);
+      showToast("Added new custom category to tracker!");
+    };
+
+    // Calculate totals across columns
+    const monthsTotals = Array(12).fill(0);
+    let grandBudgetTotal = 0;
+    
+    rows.forEach(r => {
+      if (!r.excluded) {
+        grandBudgetTotal += r.annualBudget;
+        r.months.forEach((m, idx) => {
+          monthsTotals[idx] += m;
+        });
+      }
+    });
+
+    const monthNamesShort = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+    return (
+      <div className="bg-slate-50 border border-slate-200/90 shadow-xs rounded-xl p-4 overflow-hidden text-left font-sans print:bg-white print:border-slate-300">
+        
+        {/* Header containing title and active vendor info */}
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between pb-3.5 mb-4 border-b border-slate-200 gap-3.5">
+          <div className="text-left">
+            <div className="flex items-center gap-2">
+              <Calendar size={16} className="text-cyan-600 shrink-0" />
+              <h4 className="text-sm font-extrabold text-slate-900 tracking-tight">
+                Category & Month-wise Breakdown — <span className="text-cyan-705 font-extrabold">{compName}</span> <span className="text-indigo-650 font-normal">({activeVendor.name})</span>
+              </h4>
+            </div>
+            <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+              Based on the 1-Year cost structure. Edit cells directly to update the pricing cell of the selected vendor.
+            </p>
+          </div>
+        </div>
+
+        {/* Tracker Table Wrapper */}
+        <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-3xs max-w-full">
+          <table className="min-w-[1100px] w-full divide-y divide-slate-150">
+            <thead>
+              <tr className="bg-slate-105 text-[10px] font-bold text-slate-500 uppercase tracking-wider text-center select-none">
+                <th scope="col" className="w-[4%] px-2 py-2.5 text-center">Inc</th>
+                <th scope="col" className="w-[18%] px-3 py-2.5 text-left text-slate-700 font-extrabold">Cost Category</th>
+                <th scope="col" className="w-[12%] px-3 py-2.5 text-right font-extrabold text-[#0f766e]">Annual Recurring Charges</th>
+                {monthNamesShort.map((m) => (
+                  <th key={m} scope="col" className="px-1 py-2.5 text-right w-[4.5%] text-[9.5px]">{m}</th>
+                ))}
+                <th scope="col" className="w-[20%] px-3 py-2.5 text-left font-extrabold text-slate-600 font-sans">Description / Notes</th>
+                <th scope="col" className="w-[5%] px-2 py-2.5 text-center print:hidden">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100 bg-white">
+              {rows.map((row) => (
+                <tr 
+                  key={row.id} 
+                  className={`hover:bg-slate-50/40 divide-x divide-slate-50 transition-colors ${
+                    row.excluded ? "bg-slate-100/50 opacity-55" : ""
+                  }`}
+                >
+                  {/* Inclusion Toggle Column */}
+                  <td className="px-2 py-2.5 text-center">
+                    <button
+                      type="button"
+                      onClick={() => toggleRowExcluded(row.id)}
+                      className={`p-1 rounded cursor-pointer transition flex items-center justify-center mx-auto ${
+                        row.excluded 
+                          ? "text-slate-300 hover:text-emerald-600 hover:bg-slate-100 bg-slate-50" 
+                          : "text-emerald-600 hover:text-rose-600 bg-emerald-50/40"
+                      }`}
+                      title={row.excluded ? "Currently excluded. Click to include in total budget" : "Currently included. Click to exclude from total budget"}
+                    >
+                      {row.excluded ? (
+                        <X size={10} className="stroke-[3px]" />
+                      ) : (
+                        <Check size={10} className="stroke-[3px]" />
+                      )}
+                    </button>
+                  </td>
+
+                  {/* Category Name Column */}
+                  <td className="px-3 py-2 text-left">
+                    <TrackerRowCategoryInput
+                      value={row.category}
+                      disabled={row.excluded}
+                      onSave={(val) => handleFieldChange(row.id, "category", val)}
+                    />
+                  </td>
+
+                  {/* Annual Budget Total Column */}
+                  <td className="px-3 py-2 text-right">
+                    <div className="flex items-center justify-end font-mono font-black text-[#0f766e]">
+                      <span className="text-[10px] text-teal-600/70 mr-0.5 select-none font-sans">$</span>
+                      <TrackerAnnualBudgetInput
+                        value={row.annualBudget}
+                        disabled={row.excluded}
+                        onSave={(val) => handleFieldChange(row.id, "annualBudget", val)}
+                      />
+                    </div>
+                  </td>
+
+                  {/* Monthly Breakdown Columns (Garunanteed 12 months, including DEC) */}
+                  {Array.from({ length: 12 }).map((_, mIdx) => {
+                    const mVal = row.months[mIdx] ?? 0;
+                    return (
+                      <td key={mIdx} className="px-1 py-2 text-right font-mono">
+                        <MonthAmountInput
+                          value={mVal}
+                          disabled={row.excluded}
+                          onSave={(val) => handleMonthChange(row.id, mIdx, val)}
+                        />
+                      </td>
+                    );
+                  })}
+
+                  {/* Description Column */}
+                  <td className="px-3 py-2 text-left font-sans">
+                    <TrackerRowDescriptionInput
+                      value={row.description}
+                      disabled={row.excluded}
+                      onSave={(val) => handleFieldChange(row.id, "description", val)}
+                    />
+                  </td>
+
+                  {/* Actions Column */}
+                  <td className="px-2 py-2 text-center print:hidden">
+                    <button
+                      type="button"
+                      onClick={() => deleteRow(row.id, row.category)}
+                      className="p-1 text-slate-300 hover:text-rose-500 rounded hover:bg-slate-100 transition cursor-pointer mx-auto flex items-center justify-center"
+                      title="Delete category row"
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+
+              {/* Grand Total Tracker Row */}
+              <tr className="bg-cyan-50/50 border-t-2 border-[#b0dfeb] print:bg-slate-50 print:border-slate-300 font-bold">
+                <td className="px-2 py-2.5 text-center text-cyan-800 font-black">Σ</td>
+                <td className="px-3 py-2.5 text-cyan-800 font-extrabold uppercase text-[10px] tracking-wider text-left">Grand Total</td>
+                
+                {/* Grand Budget Total Cell */}
+                <td className="px-3 py-2.5 text-right font-mono font-black text-[#0f766e] text-[13px]">
+                  {formatCurrency(grandBudgetTotal)}
+                </td>
+
+                {/* Monthly Totals Columns */}
+                {monthsTotals.map((mTot, idx) => (
+                  <td key={idx} className="px-1 py-2.5 text-right font-mono text-[11px] text-cyan-800 font-black">
+                    {mTot === 0 ? "0" : mTot.toLocaleString(undefined, { maximumFractionDigits: 1 })}
+                  </td>
+                ))}
+
+                {/* Leftover slots */}
+                <td className="px-3 py-2.5 text-left font-semibold text-slate-400 text-[10.5px] italic font-sans select-none">Sum totals computed automatically</td>
+                <td className="px-2 py-2.5 print:hidden"></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        {/* Footer Actions */}
+        <div className="flex justify-between items-center mt-3 pt-1.5 print:hidden">
+          <button
+            type="button"
+            onClick={addCustomRow}
+            className="flex items-center gap-1.5 text-[11px] bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 hover:border-slate-300 px-3 py-1.5 rounded-lg font-bold shadow-3xs transition cursor-pointer"
+          >
+            <Plus size={12} className="text-emerald-600" />
+            Add Custom Breakdown Row
+          </button>
+          
+          <span className="text-[10px] text-slate-400 font-bold">
+            * Parent cell total auto-calculated: {formatCurrency(grandBudgetTotal)}
+          </span>
+        </div>
+      </div>
+    );
+  }
 
   // Project Switching & Cloning & Resets
   const createNewProject = () => {
@@ -2016,12 +2743,12 @@ export default function App() {
                             const isOneTime = lowerName.includes("one-time") || lowerName.includes("onetime") || lowerName.includes("setup") || lowerName.includes("initial") || factor === 1;
 
                             return (
-                              <div key={comp.id} className="flex items-center justify-between text-[11px] font-medium leading-none py-1 border-b border-emerald-100/40">
+                              <div key={`${cat.id}-${comp.id}`} className="flex items-center justify-between text-[11px] font-medium leading-none py-1 border-b border-emerald-100/40">
                                 <span className="text-slate-700 truncate max-w-[150px]" title={`${cat.name} > ${comp.name}`}>
                                   {comp.name}
                                 </span>
                                 <span className="text-slate-800 font-mono font-bold shrink-0">
-                                  {formatCurrency(scaledVal)} <span className="text-[9px] text-slate-400 font-normal">({isOneTime ? "one-time" : "recurring"})</span>
+                                  {formatCurrency(scaledVal)}
                                 </span>
                               </div>
                             );
@@ -2305,35 +3032,20 @@ export default function App() {
                         </div>
                       </div>
 
-                      {/* Plan Description details */}
-                      <div className="flex flex-col gap-1 border-t border-slate-100 pt-3 text-justify leading-relaxed">
-                        <span className="text-[9px] font-bold text-[#0369a1] uppercase tracking-wider">Plan Description</span>
-                        {project.vendorPlans?.[v.id] ? (
-                          <p className="text-slate-600 font-sans text-xs leading-normal">{project.vendorPlans[v.id]}</p>
-                        ) : (
-                          <span className="text-slate-400 italic text-[11px]">No specific plan parameters entered.</span>
-                        )}
-                      </div>
-
-                      {/* Payment milestones */}
-                      <div className="flex flex-col gap-1 border-t border-slate-100 pt-3 text-justify leading-relaxed">
-                        <span className="text-[9px] font-bold text-[#0369a1] uppercase tracking-wider">Payment schedule / milestones</span>
-                        {project.paymentMilestones?.[v.id] ? (
-                          <p className="text-slate-600 font-sans text-xs leading-normal">{project.paymentMilestones[v.id]}</p>
-                        ) : (
-                          <span className="text-slate-400 italic text-[11px]">No milestone terms entered.</span>
-                        )}
-                      </div>
-
-                      {/* Onboarding schedules */}
-                      <div className="flex flex-col gap-1 border-t border-slate-100 pt-3 text-justify leading-relaxed">
-                        <span className="text-[9px] font-bold text-[#0369a1] uppercase tracking-wider">Onboarding Lifecycle</span>
-                        {project.onboardingTimelines?.[v.id] ? (
-                          <p className="text-slate-600 font-sans text-xs leading-normal">{project.onboardingTimelines[v.id]}</p>
-                        ) : (
-                          <span className="text-slate-400 italic text-[11px]">No setup timeline entered.</span>
-                        )}
-                      </div>
+                      {/* Dynamic Qualitative Parameter rows */}
+                      {getProjectQualitativeRows(project).map((row) => {
+                        const val = row.values?.[v.id] || "";
+                        return (
+                          <div key={row.id} className="flex flex-col gap-1 border-t border-slate-100 pt-3 text-justify leading-relaxed">
+                            <span className="text-[9px] font-bold text-[#0369a1] uppercase tracking-wider">{row.name}</span>
+                            {val ? (
+                              <p className="text-slate-600 font-sans text-xs leading-normal">{val}</p>
+                            ) : (
+                              <span className="text-slate-400 italic text-[11px]">No details entered.</span>
+                            )}
+                          </div>
+                        );
+                      })}
 
                       {/* Dossier proposal files */}
                       <div className="flex flex-col gap-1.5 border-t border-slate-100 pt-3">
@@ -2413,7 +3125,7 @@ export default function App() {
                 <div 
                   key={cat.id} 
                   id={cat.id} 
-                  className={`bg-white/55 backdrop-blur-xl rounded-2xl border overflow-hidden shadow-xl hover:shadow-2xl transition duration-200 flex flex-col lg:flex-row relative group/card print:border-slate-300 print:shadow-none ${
+                  className={`bg-white/55 backdrop-blur-xl rounded-2xl border overflow-hidden shadow-xl hover:shadow-2xl transition duration-200 flex flex-col relative group/card print:border-slate-300 print:shadow-none ${
                     draggedCategoryIndex === catIdx ? "opacity-30 border-dashed border-indigo-400 bg-indigo-50/10 scale-98" : "border-white/60"
                   }`}
                   onDragOver={(e) => handleCategoryDragOver(e, catIdx)}
@@ -2529,9 +3241,9 @@ export default function App() {
                               {cat.components.map((comp, compIdx) => {
                                 const isExcluded = isComponentExcluded(cat.id, comp.id);
                                 return (
-                                  <tr 
-                                    key={comp.id} 
-                                    className={`group/row hover:bg-slate-50/50 transition ${
+                                  <React.Fragment key={comp.id}>
+                                    <tr 
+                                      className={`group/row hover:bg-slate-50/50 transition ${
                                       draggedComponentInfo?.catId === cat.id && draggedComponentInfo?.compIndex === compIdx 
                                         ? "opacity-35 bg-indigo-50/30 border-l-2 border-indigo-500" 
                                         : ""
@@ -2581,15 +3293,17 @@ export default function App() {
                                             className="text-xs font-bold text-slate-900 border-b border-indigo-500 bg-white focus:outline-hidden"
                                           />
                                         ) : (
-                                          <span 
-                                            onClick={() => startEditing("component-name", cat.id, comp.id, comp.name)}
-                                            className={`cursor-pointer hover:text-indigo-600 hover:font-semibold transition-all duration-150 ${
-                                              isExcluded ? "text-slate-400 line-through italic" : "text-slate-800"
-                                            }`}
-                                            title="Click to rename"
-                                          >
-                                            {comp.name}
-                                          </span>
+                                          <div className="flex items-center gap-1.5 flex-wrap flex-1 min-w-0">
+                                            <span 
+                                              onClick={() => startEditing("component-name", cat.id, comp.id, comp.name)}
+                                              className={`cursor-pointer hover:text-indigo-600 hover:font-semibold transition-all duration-150 truncate max-w-[130px] sm:max-w-none ${
+                                                isExcluded ? "text-slate-400 line-through italic" : "text-slate-800"
+                                              }`}
+                                              title={`${comp.name} — Click to rename`}
+                                            >
+                                              {comp.name}
+                                            </span>
+                                          </div>
                                         )}
                                       </div>
                                     </td>
@@ -2665,24 +3379,66 @@ export default function App() {
                                               </span>
                                             );
                                           })()}
+
+                                          {/* Expandable Category & Month-wise Breakdown button under the amount */}
+                                          {!isExcluded && comp.name.toLowerCase().includes("annual") && (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleVendorTrackerToggle(cat.id, comp.id, vendor.id)}
+                                              className={`mt-1.5 px-2 py-0.5 rounded text-[9px] font-extrabold uppercase tracking-wide transition border flex items-center justify-center gap-1 cursor-pointer select-none print:hidden ${
+                                                expandedTrackers[cat.id]?.[comp.id] && (trackerVendorSelections[`${cat.id}-${comp.id}`] || project.vendors[0]?.id) === vendor.id
+                                                  ? "bg-cyan-600 hover:bg-cyan-700 text-white border-cyan-600" 
+                                                  : "bg-cyan-50/75 hover:bg-cyan-100 text-cyan-700 border-cyan-200 hover:border-cyan-300"
+                                              }`}
+                                              title={`Open Category & Month-wise Breakdown for ${vendor.name}`}
+                                            >
+                                              <Calendar size={10} />
+                                              Category & Month-wise Breakdown
+                                            </button>
+                                          )}
                                         </div>
                                       </td>
                                     );
                                   })}
 
-                                  {/* Action column delete row */}
+                                  {/* Action column delete row/clone row */}
                                   <td className="px-2 text-center text-slate-300 hover:text-rose-500 cursor-pointer transition print:hidden">
-                                    <button 
-                                      onClick={() => deleteCostComponent(cat.id, comp.id, comp.name)}
-                                      className="opacity-45 hover:opacity-100 group-hover/row:opacity-100 hover:scale-110 p-1 text-slate-400 hover:text-rose-500 rounded transition duration-150"
-                                      title="Delete this row"
-                                    >
-                                      <Trash2 size={13} />
-                                    </button>
+                                    <div className="flex items-center justify-center gap-1">
+                                      {comp.name.toLowerCase().includes("annual") && (
+                                        <button 
+                                          onClick={() => cloneCostComponent(cat.id, comp.id, comp.name)}
+                                          className="opacity-45 hover:opacity-100 group-hover/row:opacity-100 hover:scale-110 p-1 text-slate-400 hover:text-indigo-600 rounded transition duration-150"
+                                          title="Clone/duplicate this annual components series row"
+                                        >
+                                          <Copy size={13} />
+                                        </button>
+                                      )}
+                                      <button 
+                                        onClick={() => deleteCostComponent(cat.id, comp.id, comp.name)}
+                                        className="opacity-45 hover:opacity-100 group-hover/row:opacity-100 hover:scale-110 p-1 text-slate-400 hover:text-rose-500 rounded transition duration-150"
+                                        title="Delete this row"
+                                      >
+                                        <Trash2 size={13} />
+                                      </button>
+                                    </div>
                                   </td>
                                 </tr>
-                              );
-                            })}
+                                {expandedTrackers[cat.id]?.[comp.id] && (
+                                  <tr className="bg-slate-50/10 border-b border-cyan-100/50 print:bg-white" key={`${comp.id}-expanded-tracker`}>
+                                    <td colSpan={project.vendors.length + 2} className="px-4 py-3 bg-slate-50/15">
+                                      <div className="max-w-full overflow-hidden my-1">
+                                        <MonthlyCostTrackerComponent 
+                                          catId={cat.id} 
+                                          compId={comp.id} 
+                                          compName={comp.name} 
+                                        />
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )}
+                                  </React.Fragment>
+                                );
+                              })}
 
                               {/* Section Category SUM Total row */}
                               <tr className="bg-slate-50/40 font-bold border-t border-slate-200">
@@ -2889,6 +3645,17 @@ export default function App() {
                                           </span>
                                         )}
   
+                                        {/* Clone button for annual components in transposed layout */}
+                                        {comp.name.toLowerCase().includes("annual") && (
+                                          <button 
+                                            onClick={() => cloneCostComponent(cat.id, comp.id, comp.name)}
+                                            className="text-slate-400 hover:text-indigo-600 rounded p-1 transition print:hidden shrink-0 flex items-center justify-center cursor-pointer"
+                                            title={`Clone/duplicate "${comp.name}" series column`}
+                                          >
+                                            <Copy size={11} />
+                                          </button>
+                                        )}
+
                                         {/* Inline Component Delete Button */}
                                         <button 
                                           onClick={() => deleteCostComponent(cat.id, comp.id, comp.name)} 
@@ -3083,6 +3850,25 @@ export default function App() {
                                                 </span>
                                               );
                                             })()}
+
+                                            {/* Expandable Category & Month-wise Breakdown button under the amount block inside transposed layout */}
+                                            {!isExcluded && comp.name.toLowerCase().includes("annual") && (
+                                              <button
+                                                type="button"
+                                                onClick={() => {
+                                                  setTrackerVendorSelections(prev => ({
+                                                    ...prev,
+                                                    [`${cat.id}-${comp.id}`]: vendor.id
+                                                  }));
+                                                  setModalTrackerInfo({ catId: cat.id, compId: comp.id, compName: comp.name });
+                                                }}
+                                                className="mt-1.5 px-2 py-0.5 rounded text-[9px] font-extrabold uppercase tracking-wide transition border flex items-center justify-center gap-1 cursor-pointer select-none print:hidden bg-cyan-50/75 hover:bg-cyan-100 text-cyan-700 border-cyan-200 hover:border-cyan-300"
+                                                title={`Open Category & Month-wise Breakdown for ${vendor.name}`}
+                                              >
+                                                <Calendar size={10} />
+                                                Category & Month-wise Breakdown
+                                              </button>
+                                            )}
                                           </div>
                                         </td>
                                       );
@@ -3166,162 +3952,114 @@ export default function App() {
 
                   </div>
 
-                  {/* Comments Side-car section */}
-                  <div className="w-full lg:w-80 bg-white/20 backdrop-blur-md border-t lg:border-t-0 lg:border-l border-white/30 p-6 flex flex-col gap-3 justify-start shrink-0 print:border-l-0 print:bg-white print:p-0 print:mt-1">
-                    <div className="flex items-center gap-1.5">
-                      <FileText size={15} className="text-slate-400" />
-                      <span className="text-[11px] font-extrabold uppercase tracking-widest text-slate-400">Analysis & Evaluation Remarks</span>
-                    </div>
-                    <textarea
-                      placeholder={`Document qualitative findings, capacity limits, or trade-offs for ${cat.name} cost components here...`}
-                      value={remarks}
-                      onChange={(e) => handleCategoryCommentChange(cat.id, e.target.value)}
-                      rows={5}
-                      className="w-full text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-xl p-3 focus:outline-hidden focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 resize-y leading-relaxed shadow-3xs hover:border-slate-300 transition shrink-0 print:border-0 print:p-0 print:shadow-none print:mt-1 text-justify"
-                    />
-                  </div>
-
                 </div>
               );
             })}
 
             {/* QUALITATIVE PARAMETERS MATRIX (Plan, Milestones, Onboarding) */}
             <div className="border border-[#c0e6ee] rounded-3xl bg-[#f0f9fa]/50 backdrop-blur-md shadow-sm overflow-hidden mt-4 p-6 md:p-8 flex flex-col gap-6">
-              <div>
-                <h4 className="text-xs font-extrabold text-[#0e7490] uppercase tracking-widest flex items-center gap-2">
-                  <FileText size={14} className="text-[#0e7490]" /> Supplying Parameters & Qualitative Milestones
-                </h4>
-                <p className="text-xs text-slate-500 mt-1">Provide license specifics, incremental payout installments, and transition expectations for each tender supplier.</p>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <h4 className="text-xs font-extrabold text-[#0e7490] uppercase tracking-widest flex items-center gap-2">
+                    <FileText size={14} className="text-[#0e7490]" /> Supplying Parameters & Qualitative Milestones
+                  </h4>
+                  <p className="text-xs text-slate-500 mt-1">Provide license specifics, incremental payout installments, and transition expectations for each tender supplier.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={addQualitativeRow}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-600 hover:bg-cyan-700 text-white text-xs font-bold rounded-lg transition shadow-xs cursor-pointer select-none print:hidden"
+                  title="Add custom qualitative parameter row to compare vendors"
+                >
+                  <Plus size={13} /> Add Qualitative Row
+                </button>
               </div>
 
               <div className="overflow-x-auto rounded-2xl border border-[#bfe2ea] bg-white shadow-3xs">
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="bg-[#e4f3f6] border-b border-[#bfe2ea] text-slate-800 text-[11px] font-bold tracking-wider">
-                      <th className="px-5 py-3.5 w-60 font-extrabold uppercase text-[#0e7490] select-none">Qualitative Parameter</th>
+                      <th className="px-5 py-3.5 w-76 font-extrabold uppercase text-[#0e7490] select-none">Qualitative Parameter</th>
                       {project.vendors.map((v) => (
                         <th key={v.id} className="px-5 py-3.5 font-extrabold uppercase text-slate-800 min-w-[250px]">{v.name}</th>
                       ))}
+                      <th className="px-5 py-3.5 text-center font-extrabold uppercase text-[#0e7490] w-24 print:hidden">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {/* Plan/Model row */}
-                    <tr className="hover:bg-slate-50/50 transition">
-                      <td className="px-5 py-4 text-xs font-bold text-slate-705">
-                        <span className="font-extrabold text-[#0369a1] block">Plan / Model Description</span>
-                        <span className="text-[10px] text-slate-400 font-medium block mt-0.5 leading-normal">Software tier details, seat allotments, licenses, or specific server models.</span>
-                      </td>
-                      {project.vendors.map((v) => {
-                        const value = project.vendorPlans?.[v.id] || "";
-                        return (
-                          <td key={v.id} className="px-5 py-4">
-                            <div className="relative group/field flex flex-col items-stretch">
-                              <textarea
-                                rows={3}
-                                placeholder="Describe plan (e.g., Premium, SaaS)..."
-                                value={value}
-                                onChange={(e) => handleVendorPlanChange(v.id, e.target.value)}
-                                className="w-full text-xs bg-slate-50 border border-slate-250 focus:bg-white focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 rounded-xl p-3 resize-y leading-relaxed text-left font-sans transition-all"
-                              />
-                              {value && (
-                                <button
-                                  onClick={() => {
-                                    setConfirmDialog({
-                                      title: "Clear Plan Description",
-                                      message: `Are you sure you want to delete the plan details for ${v.name}?`,
-                                      onConfirm: () => handleVendorPlanChange(v.id, "")
-                                    });
-                                  }}
-                                  className="absolute top-2 right-2 opacity-0 group-hover/field:opacity-100 p-1.5 text-slate-400 hover:text-rose-500 bg-white shadow-xs rounded-lg border border-slate-150 transition cursor-pointer"
-                                  title="Clear description"
-                                >
-                                  <Trash2 size={12} />
-                                </button>
-                              )}
-                            </div>
-                          </td>
-                        );
-                      })}
-                    </tr>
-
-                    {/* Milestone terms row */}
-                    <tr className="hover:bg-slate-50/50 transition">
-                      <td className="px-5 py-4 text-xs font-bold text-slate-705">
-                        <span className="font-extrabold text-[#0369a1] block">Payment Milestones</span>
-                        <span className="text-[10px] text-slate-400 font-medium block mt-0.5 leading-normal">Incremental payout milestones (e.g., 30% advance, progress payments, or final acceptance).</span>
-                      </td>
-                      {project.vendors.map((v) => {
-                        const value = project.paymentMilestones?.[v.id] || "";
-                        return (
-                          <td key={v.id} className="px-5 py-4">
-                            <div className="relative group/field flex flex-col items-stretch">
-                              <textarea
-                                rows={3}
-                                placeholder="Milestones (e.g., 30% upfront)..."
-                                value={value}
-                                onChange={(e) => handlePaymentMilestonesChange(v.id, e.target.value)}
-                                className="w-full text-xs bg-slate-50 border border-slate-250 focus:bg-white focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 rounded-xl p-3 resize-y leading-relaxed text-left font-sans transition-all"
-                              />
-                              {value && (
-                                <button
-                                  onClick={() => {
-                                    setConfirmDialog({
-                                      title: "Clear Payment Terms",
-                                      message: `Are you sure you want to delete payment milestones for ${v.name}?`,
-                                      onConfirm: () => handlePaymentMilestonesChange(v.id, "")
-                                    });
-                                  }}
-                                  className="absolute top-2 right-2 opacity-0 group-hover/field:opacity-100 p-1.5 text-slate-400 hover:text-rose-500 bg-white shadow-xs rounded-lg border border-slate-150 transition cursor-pointer"
-                                  title="Clear milestones"
-                                >
-                                  <Trash2 size={12} />
-                                </button>
-                              )}
-                            </div>
-                          </td>
-                        );
-                      })}
-                    </tr>
-
-                    {/* Onboarding Timeline row */}
-                    <tr className="hover:bg-slate-50/50 transition">
-                      <td className="px-5 py-4 text-xs font-bold text-slate-705">
-                        <span className="font-extrabold text-[#0369a1] block">Onboarding Timeline</span>
-                        <span className="text-[10px] text-slate-400 font-medium block mt-0.5 leading-normal">Estimated system setup, cloud migration, key training schedules.</span>
-                      </td>
-                      {project.vendors.map((v) => {
-                        const value = project.onboardingTimelines?.[v.id] || "";
-                        return (
-                          <td key={v.id} className="px-5 py-4">
-                            <div className="relative group/field flex flex-col items-stretch">
-                              <textarea
-                                rows={3}
-                                placeholder="Setup timeline (e.g., 6 weeks total)..."
-                                value={value}
-                                onChange={(e) => handleOnboardingTimelineChange(v.id, e.target.value)}
-                                className="w-full text-xs bg-slate-50 border border-slate-250 focus:bg-white focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 rounded-xl p-3 resize-y leading-relaxed text-left font-sans transition-all"
-                              />
-                              {value && (
-                                <button
-                                  onClick={() => {
-                                    setConfirmDialog({
-                                      title: "Clear Onboarding Timeline",
-                                      message: `Are you sure you want to delete onboarding timeline for ${v.name}?`,
-                                      onConfirm: () => handleOnboardingTimelineChange(v.id, "")
-                                    });
-                                  }}
-                                  className="absolute top-2 right-2 opacity-0 group-hover/field:opacity-100 p-1.5 text-slate-400 hover:text-rose-500 bg-white shadow-xs rounded-lg border border-slate-150 transition cursor-pointer"
-                                  title="Clear timeline"
-                                >
-                                  <Trash2 size={12} />
-                                </button>
-                              )}
-                            </div>
-                          </td>
-                        );
-                      })}
-                    </tr>
-
+                    {getProjectQualitativeRows(project).map((row) => (
+                      <tr key={row.id} className="hover:bg-slate-50/50 transition">
+                        <td className="px-5 py-4 text-xs font-bold text-slate-705">
+                          <input
+                            type="text"
+                            value={row.name}
+                            onChange={(e) => handleQualitativeRowHeaderChange(row.id, "name", e.target.value)}
+                            className="w-full text-xs font-extrabold text-[#0369a1] bg-transparent border-b border-transparent hover:border-slate-300 focus:border-[#0369a1] px-1 py-0.5 rounded transition focus:outline-hidden"
+                            placeholder="Parameter Title (e.g. SLA Terms)"
+                          />
+                          <textarea
+                            rows={2}
+                            value={row.description}
+                            onChange={(e) => handleQualitativeRowHeaderChange(row.id, "description", e.target.value)}
+                            className="w-full text-[10px] text-slate-400 font-medium block mt-1 leading-normal bg-transparent border border-transparent hover:border-slate-305 focus:border-[#0369a1] px-1 py-0.5 rounded transition focus:outline-hidden resize-none"
+                            placeholder="Describe parameter criteria..."
+                          />
+                        </td>
+                        {project.vendors.map((v) => {
+                          const value = row.values?.[v.id] ?? "";
+                          return (
+                            <td key={v.id} className="px-5 py-4">
+                              <div className="relative group/field flex flex-col items-stretch">
+                                <textarea
+                                  rows={3}
+                                  placeholder="Describe details..."
+                                  value={value}
+                                  onChange={(e) => handleQualitativeRowValueChange(row.id, v.id, e.target.value)}
+                                  className="w-full text-xs bg-slate-50 border border-slate-250 focus:bg-white focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 rounded-xl p-3 resize-y leading-relaxed text-left font-sans transition-all"
+                                />
+                                {value && (
+                                  <button
+                                    onClick={() => {
+                                      setConfirmDialog({
+                                        title: "Clear Parameter Value",
+                                        message: `Are you sure you want to delete the details for ${v.name}?`,
+                                        onConfirm: () => handleQualitativeRowValueChange(row.id, v.id, "")
+                                      });
+                                    }}
+                                    className="absolute top-2 right-2 opacity-0 group-hover/field:opacity-100 p-1.5 text-slate-400 hover:text-rose-500 bg-white shadow-xs rounded-lg border border-slate-150 transition cursor-pointer"
+                                    title="Clear value"
+                                  >
+                                    <Trash2 size={12} />
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          );
+                        })}
+                        
+                        {/* Actions Column */}
+                        <td className="px-5 py-4 text-center print:hidden border-l border-slate-50">
+                          <div className="flex items-center justify-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => cloneQualitativeRow(row.id)}
+                              className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-slate-100 rounded-lg transition cursor-pointer"
+                              title={`Clone/Duplicate row "${row.name}"`}
+                            >
+                              <Copy size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => deleteQualitativeRow(row.id)}
+                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-slate-100 rounded-lg transition cursor-pointer"
+                              title={`Delete row "${row.name}"`}
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -3760,6 +4498,45 @@ export default function App() {
                 className="px-4 py-1.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-[11px] rounded-lg transition duration-100 shadow-sm cursor-pointer"
               >
                 Yes, Proceed
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal / Dialog Backdrop for Transposed Layout cost trackers */}
+      {modalTrackerInfo && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/65 backdrop-blur-xs print:hidden animate-fade-in text-left">
+          <div className="bg-white rounded-2xl max-w-6xl w-full p-5 shadow-2xl border border-slate-200 flex flex-col gap-3 animate-scale-up max-h-[92vh] overflow-y-auto">
+            <div className="flex justify-between items-center pb-2 border-b border-slate-150">
+              <h3 className="font-extrabold text-slate-950 text-sm flex items-center gap-1.5 select-none font-sans">
+                <Calendar size={16} className="text-cyan-650" />
+                Detailed Project Cost Estimate
+              </h3>
+              <button
+                type="button"
+                onClick={() => setModalTrackerInfo(null)}
+                className="p-1 px-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto pr-0.5">
+              <MonthlyCostTrackerComponent 
+                catId={modalTrackerInfo.catId}
+                compId={modalTrackerInfo.compId}
+                compName={modalTrackerInfo.compName}
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 mt-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setModalTrackerInfo(null)}
+                className="px-5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-750 font-bold text-xs rounded-xl transition cursor-pointer"
+              >
+                Discard & Close
               </button>
             </div>
           </div>

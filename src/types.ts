@@ -30,6 +30,22 @@ export interface UploadedFile {
   vendorId?: string;
 }
 
+export interface MonthlyCostTrackerRow {
+  id: string;
+  category: string;
+  annualBudget: number;
+  months: number[]; // Jan-Dec (12 values)
+  description: string;
+  excluded?: boolean;
+}
+
+export interface QualitativeRow {
+  id: string;
+  name: string;
+  description: string;
+  values: Record<string, string>; // vendorId -> value
+}
+
 export interface QuoteProject {
   id: string;
   name: string;
@@ -54,4 +70,6 @@ export interface QuoteProject {
   onboardingTimelines?: Record<string, string>;
   recommendedVendorId?: string;
   excludedCostComponents?: Record<string, boolean>;
+  monthlyCostTrackers?: Record<string, Record<string, Record<string, MonthlyCostTrackerRow[]>>>; // [catId][compId][vendorId]
+  qualitativeRows?: QualitativeRow[];
 }
