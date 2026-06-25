@@ -76,4 +76,5 @@ export interface QuoteProject {
   categoryQualitativeRows?: Record<string, QualitativeRow[]>;
   deletedCategoryQualitativeSections?: Record<string, boolean>;
   deletedProjectQualitativeSection?: boolean;
+  selectedVendorIds?: Record<string, string>; // categoryId -> selected vendorId
 }

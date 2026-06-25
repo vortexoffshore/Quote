@@ -324,6 +324,7 @@ export default function App() {
     type: "project-name" | "project-date" | "project-version" | "vendor-name" | "category-name" | "component-name" | "criteria-name" | "criteria-desc" | null;
     id?: string;
     subId?: string;
+    catId?: string;
   }>({ type: null });
 
   const [editValue, setEditValue] = useState("");
@@ -800,6 +801,41 @@ export default function App() {
     return b.oneTime + b.recurring;
   };
 
+  // Helper to calculate cost breakdown for selected categories for a vendor
+  const getVendorSelectedGrandTotalBreakdown = (venId: string) => {
+    let oneTime = 0;
+    let recurring = 0;
+    project.categories.forEach(cat => {
+      const isSelected = project.selectedVendorIds?.[cat.id] === venId;
+      if (isSelected) {
+        const b = getCategoryTotalBreakdown(cat.id, venId);
+        oneTime += b.oneTime;
+        recurring += b.recurring;
+      }
+    });
+    return { oneTime, recurring };
+  };
+
+  const getVendorSelectedGrandTotal = (venId: string): number => {
+    const b = getVendorSelectedGrandTotalBreakdown(venId);
+    return b.oneTime + b.recurring;
+  };
+
+  // Helper to calculate total cost breakdown of selected vendor options across all categories
+  const getSelectedOptionsGrandTotalBreakdown = () => {
+    let oneTime = 0;
+    let recurring = 0;
+    project.categories.forEach(cat => {
+      const selVendorId = project.selectedVendorIds?.[cat.id];
+      if (selVendorId) {
+        const b = getCategoryTotalBreakdown(cat.id, selVendorId);
+        oneTime += b.oneTime;
+        recurring += b.recurring;
+      }
+    });
+    return { oneTime, recurring };
+  };
+
   // Find cheapest vendor based on financial GRAND TOTAL TCO
   const getFinancialBriefing = () => {
     const totals = project.vendors.map(v => ({
@@ -866,9 +902,29 @@ export default function App() {
     return cat.vendors || project.vendors;
   };
 
+  // Select Vendor Handler
+  const handleSelectVendor = (catId: string, vendorId: string) => {
+    const updated = { ...project };
+    if (!updated.selectedVendorIds) {
+      updated.selectedVendorIds = {};
+    }
+    
+    if (!vendorId || updated.selectedVendorIds[catId] === vendorId) {
+      delete updated.selectedVendorIds[catId];
+      showToast("Vendor selection cleared for this category");
+    } else {
+      updated.selectedVendorIds[catId] = vendorId;
+      const cat = project.categories.find(c => c.id === catId);
+      const vendorsList = cat ? getCategoryVendors(cat) : project.vendors;
+      const vendorName = vendorsList.find(v => v.id === vendorId)?.name || "Vendor";
+      showToast(`Selected "${vendorName}" for category "${cat?.name || "Category"}"`);
+    }
+    updateCurrentProject(updated);
+  };
+
   // Field Edit Handlers
-  const startEditing = (type: typeof editingField.type, id?: string, subId?: string, currentVal: string = "") => {
-    setEditingField({ type, id, subId });
+  const startEditing = (type: typeof editingField.type, id?: string, subId?: string, currentVal: string = "", catId?: string) => {
+    setEditingField({ type, id, subId, catId });
     setEditValue(currentVal);
   };
 
@@ -891,18 +947,36 @@ export default function App() {
     } else if (editingField.type === "vendor-name" && editingField.id) {
       const vId = editingField.id;
       const newName = editValue.trim() || "Vendor";
-      updated.vendors = updated.vendors.map(v => v.id === vId ? { ...v, name: newName } : v);
-      updated.categories = updated.categories.map(c => {
-        if (c.vendors) {
-          return {
-            ...c,
-            vendors: c.vendors.map(v => v.id === vId ? { ...v, name: newName } : v)
-          };
-        }
-        return c;
-      });
+      const catId = editingField.catId;
+
+      if (catId) {
+        // Group-specific vendor name edit
+        updated.categories = updated.categories.map(c => {
+          if (c.id === catId) {
+            const currentVendors = c.vendors || JSON.parse(JSON.stringify(project.vendors));
+            return {
+              ...c,
+              vendors: currentVendors.map((v: Vendor) => v.id === vId ? { ...v, name: newName } : v)
+            };
+          }
+          return c;
+        });
+        showToast(`Vendor renamed to "${newName}" in this group`);
+      } else {
+        // Global vendor name edit
+        updated.vendors = updated.vendors.map(v => v.id === vId ? { ...v, name: newName } : v);
+        updated.categories = updated.categories.map(c => {
+          if (c.vendors) {
+            return {
+              ...c,
+              vendors: c.vendors.map(v => v.id === vId ? { ...v, name: newName } : v)
+            };
+          }
+          return c;
+        });
+        showToast(`Vendor renamed globally to "${newName}"`);
+      }
       updateCurrentProject(updated);
-      showToast(`Vendor renamed to "${newName}"`);
     } else if (editingField.type === "category-name" && editingField.id) {
       const catId = editingField.id;
       const newName = editValue.trim() || "Category Name";
@@ -3607,60 +3681,80 @@ export default function App() {
                                 </th>
                                 
                                 {/* Vendor column names */}
-                                {getCategoryVendors(cat).map((vendor) => (
-                                  <th key={vendor.id} scope="col" className="px-4 py-3.5 text-right text-xs font-bold text-slate-400 uppercase tracking-widest relative group/vhead">
-                                    <div className="flex items-center justify-end gap-1 group">
-                                      {editingField.type === "vendor-name" && editingField.id === vendor.id ? (
-                                        <div className="flex items-center gap-1 select-none text-right justify-end">
-                                          <input
-                                            type="text"
-                                            value={editValue}
-                                            onChange={(e) => setEditValue(e.target.value)}
-                                            onKeyDown={(e) => { 
-                                              if (e.key === "Enter") { saveInlineEdit(); }
-                                              if (e.key === "Escape") { setEditingField({ type: null }); }
-                                            }}
-                                            autoFocus
-                                            className="text-right font-extrabold text-slate-900 border-b border-indigo-500 text-xs py-0.5 focus:outline-hidden w-24 bg-white"
-                                          />
-                                          <button
-                                            type="button"
-                                            onClick={(e) => { e.stopPropagation(); saveInlineEdit(); }}
-                                            className="p-1 text-emerald-600 hover:bg-emerald-50 rounded cursor-pointer transition shrink-0"
-                                            title="Save"
+                                {getCategoryVendors(cat).map((vendor) => {
+                                  const isSelected = project.selectedVendorIds?.[cat.id] === vendor.id;
+                                  return (
+                                    <th key={vendor.id} scope="col" className={`px-4 py-3.5 text-right text-xs font-bold uppercase tracking-widest relative group/vhead transition-all duration-200 ${isSelected ? "bg-emerald-50/75 border-x border-emerald-150 text-emerald-800" : "text-slate-400"}`}>
+                                      <div className="flex flex-col items-end gap-1.5 group">
+                                        <div className="flex items-center gap-1 justify-end w-full">
+                                          {editingField.type === "vendor-name" && editingField.id === vendor.id && editingField.catId === cat.id ? (
+                                            <div className="flex items-center gap-1 select-none text-right justify-end">
+                                              <input
+                                                type="text"
+                                                value={editValue}
+                                                onChange={(e) => setEditValue(e.target.value)}
+                                                onKeyDown={(e) => { 
+                                                  if (e.key === "Enter") { saveInlineEdit(); }
+                                                  if (e.key === "Escape") { setEditingField({ type: null }); }
+                                                }}
+                                                autoFocus
+                                                className="text-right font-extrabold text-slate-900 border-b border-indigo-500 text-xs py-0.5 focus:outline-hidden w-24 bg-white"
+                                              />
+                                              <button
+                                                type="button"
+                                                onClick={(e) => { e.stopPropagation(); saveInlineEdit(); }}
+                                                className="p-1 text-emerald-600 hover:bg-emerald-50 rounded cursor-pointer transition shrink-0"
+                                                title="Save"
+                                              >
+                                                <Check size={11} className="stroke-[3]" />
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={(e) => { e.stopPropagation(); setEditingField({ type: null }); }}
+                                                className="p-1 text-rose-500 hover:bg-rose-50 rounded cursor-pointer transition shrink-0"
+                                                title="Cancel"
+                                              >
+                                                <X size={11} className="stroke-[3]" />
+                                              </button>
+                                            </div>
+                                          ) : (
+                                            <span
+                                              onClick={() => startEditing("vendor-name", vendor.id, undefined, vendor.name, cat.id)}
+                                              className="cursor-pointer hover:text-indigo-600 select-all border-b border-transparent hover:border-slate-300 font-extrabold text-slate-900 mr-1 truncate max-w-[130px] inline-block"
+                                              title="Click to rename vendor column"
+                                            >
+                                              {vendor.name}
+                                            </span>
+                                          )}
+
+                                          {/* Inline Vendor Delete Button */}
+                                          <button 
+                                            onClick={() => deleteVendor(vendor.id, vendor.name, cat.id)} 
+                                            className="text-slate-400 hover:text-rose-500 rounded p-1 transition print:hidden shrink-0"
+                                            title={`Remove ${vendor.name} from group`}
                                           >
-                                            <Check size={11} className="stroke-[3]" />
-                                          </button>
-                                          <button
-                                            type="button"
-                                            onClick={(e) => { e.stopPropagation(); setEditingField({ type: null }); }}
-                                            className="p-1 text-rose-500 hover:bg-rose-50 rounded cursor-pointer transition shrink-0"
-                                            title="Cancel"
-                                          >
-                                            <X size={11} className="stroke-[3]" />
+                                            <Trash2 size={11} />
                                           </button>
                                         </div>
-                                      ) : (
-                                        <span
-                                          onClick={() => startEditing("vendor-name", vendor.id, undefined, vendor.name)}
-                                          className="cursor-pointer hover:text-indigo-600 select-all border-b border-transparent hover:border-slate-300 font-extrabold text-slate-900 mr-2"
-                                          title="Click to rename vendor column"
-                                        >
-                                          {vendor.name}
-                                        </span>
-                                      )}
 
-                                      {/* Inline Vendor Delete Button */}
-                                      <button 
-                                        onClick={() => deleteVendor(vendor.id, vendor.name, cat.id)} 
-                                        className="text-slate-400 hover:text-rose-500 rounded p-1 transition print:hidden ml-1 shrink-0"
-                                        title={`Remove ${vendor.name} globally`}
-                                      >
-                                        <Trash2 size={11} />
-                                      </button>
-                                    </div>
-                                  </th>
-                                ))}
+                                        {/* "Selected" toggle button */}
+                                        <button
+                                          type="button"
+                                          onClick={() => handleSelectVendor(cat.id, vendor.id)}
+                                          className={`px-2.5 py-0.5 text-[9px] rounded-full font-extrabold uppercase tracking-wider transition-all duration-150 cursor-pointer flex items-center gap-1 select-none ${
+                                            isSelected 
+                                              ? "bg-emerald-600 text-white shadow-xs border border-emerald-650" 
+                                              : "bg-slate-100 text-slate-500 border border-slate-200 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200"
+                                          }`}
+                                          title={isSelected ? "Clear selection" : "Mark as selected"}
+                                        >
+                                          <Check size={9} className={isSelected ? "stroke-[3]" : "opacity-50"} />
+                                          {isSelected ? "Selected" : "Select"}
+                                        </button>
+                                      </div>
+                                    </th>
+                                  );
+                                })}
                                 
                                 <th scope="col" className="w-[40px] px-2 text-center text-xs font-bold text-slate-400 print:hidden"></th>
                               </tr>
@@ -3748,7 +3842,7 @@ export default function App() {
                                     const compAvg = compPrices.length > 0 ? pricingSum / compPrices.length : 0;
                                     
                                     return (
-                                      <td key={vendor.id} className="px-4 py-3 text-right">
+                                      <td key={vendor.id} className={`px-4 py-3 text-right transition-all duration-200 ${project.selectedVendorIds?.[cat.id] === vendor.id ? "bg-emerald-50/45 border-x border-emerald-100" : ""}`}>
                                         <div className={`flex flex-col items-end justify-center ${isExcluded ? "opacity-45" : ""}`}>
                                           <div className="flex items-center justify-end font-mono text-sm antialiased">
                                             <span className={`text-xs font-semibold mr-0.5 select-none ${isExcluded ? "text-slate-350" : "text-slate-400"}`}>
@@ -3883,7 +3977,7 @@ export default function App() {
                                   const totalAvg = totalsList.length > 0 ? totalSum / totalsList.length : 0;
                                   
                                   return (
-                                    <td key={vendor.id} className="px-4 py-3 text-right font-mono text-sm font-black text-slate-900 border-b-2 border-double border-slate-300">
+                                    <td key={vendor.id} className={`px-4 py-3 text-right font-mono text-sm font-black text-slate-900 border-b-2 border-double border-slate-300 transition-all duration-200 ${project.selectedVendorIds?.[cat.id] === vendor.id ? "bg-emerald-50/60 border-x border-emerald-100" : ""}`}>
                                       <div className="flex flex-col items-end justify-center">
                                         <span>{formatCurrency(catTotal)}</span>
                                         {catTotal > 0 && (() => {
@@ -3934,7 +4028,7 @@ export default function App() {
                                 {getCategoryVendors(cat).map((vendor) => {
                                   const vendorFiles = getFilesForVendor(vendor.id);
                                   return (
-                                    <td key={vendor.id} className="px-4 py-3 text-right">
+                                    <td key={vendor.id} className={`px-4 py-3 text-right transition-all duration-200 ${project.selectedVendorIds?.[cat.id] === vendor.id ? "bg-emerald-50/45 border-x border-emerald-100" : ""}`}>
                                       <div className="flex flex-col items-end gap-1.5 justify-start">
                                         {vendorFiles.length > 0 ? (
                                           <div className="flex flex-col gap-1 w-full max-w-[200px] text-[10px]">
@@ -4112,11 +4206,12 @@ export default function App() {
                                 const totalSum = totalsList.reduce((a, b) => a + b, 0);
                                 const totalAvg = totalsList.length > 0 ? totalSum / totalsList.length : 0;
 
+                                const isSelected = project.selectedVendorIds?.[cat.id] === vendor.id;
                                 return (
-                                  <tr key={vendor.id} className="group/row hover:bg-slate-50/50 transition">
+                                  <tr key={vendor.id} className={`group/row transition-all duration-200 ${isSelected ? "bg-emerald-50/45 hover:bg-emerald-100/30" : "hover:bg-slate-50/50"}`}>
                                     {/* Vendor label */}
                                     <td className="px-4 py-3 text-sm font-medium text-slate-800">
-                                      {editingField.type === "vendor-name" && editingField.id === vendor.id ? (
+                                      {editingField.type === "vendor-name" && editingField.id === vendor.id && editingField.catId === cat.id ? (
                                         <div className="flex items-center gap-1 select-none">
                                           <input
                                             type="text"
@@ -4148,13 +4243,28 @@ export default function App() {
                                         </div>
                                       ) : (
                                         <div className="flex flex-col gap-1.5">
-                                          <span 
-                                            onClick={() => startEditing("vendor-name", vendor.id, undefined, vendor.name)}
-                                            className="cursor-pointer hover:text-indigo-600 hover:font-semibold text-xs font-bold text-slate-900"
-                                            title="Click to rename vendor"
-                                          >
-                                            {vendor.name}
-                                          </span>
+                                          <div className="flex items-center gap-2">
+                                            <span 
+                                              onClick={() => startEditing("vendor-name", vendor.id, undefined, vendor.name, cat.id)}
+                                              className="cursor-pointer hover:text-indigo-600 hover:font-semibold text-xs font-bold text-slate-900"
+                                              title="Click to rename vendor"
+                                            >
+                                              {vendor.name}
+                                            </span>
+                                            <button
+                                              type="button"
+                                              onClick={() => handleSelectVendor(cat.id, vendor.id)}
+                                              className={`px-1.5 py-0.5 text-[8px] rounded-full font-extrabold uppercase tracking-wider transition-all duration-150 cursor-pointer flex items-center gap-0.5 inline-flex ${
+                                                isSelected 
+                                                  ? "bg-emerald-600 text-white border border-emerald-650 shadow-3xs" 
+                                                  : "bg-slate-100 text-slate-500 border border-slate-200 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200"
+                                              }`}
+                                              title={isSelected ? "Unselect vendor" : "Select this vendor"}
+                                            >
+                                              <Check size={8} className={isSelected ? "stroke-[3]" : "opacity-50"} />
+                                              {isSelected ? "Selected" : "Select"}
+                                            </button>
+                                          </div>
 
                                           {/* Transposed row attachments block */}
                                           <div className="flex flex-col gap-1 mt-1 print:hidden select-text">
@@ -4518,49 +4628,52 @@ export default function App() {
                           <thead>
                             <tr className="bg-[#e4f3f6] border-b border-[#bfe2ea] text-slate-850 font-extrabold tracking-wide">
                               <th className="px-4 py-2.5 w-64 uppercase text-[#0e7490] select-none text-[10px]">Qualitative Parameter</th>
-                              {getCategoryVendors(cat).map((v) => (
-                                <th key={v.id} className="px-4 py-2.5 text-slate-800 text-[10.5px] relative group/vhead">
-                                  {editingField.type === "vendor-name" && editingField.id === v.id ? (
-                                    <div className="flex items-center gap-1 select-none justify-start">
-                                      <input
-                                        type="text"
-                                        value={editValue}
-                                        onChange={(e) => setEditValue(e.target.value)}
-                                        onKeyDown={(e) => { 
-                                          if (e.key === "Enter") { saveInlineEdit(); }
-                                          if (e.key === "Escape") { setEditingField({ type: null }); }
-                                        }}
-                                        autoFocus
-                                        className="bg-white border-b border-indigo-500 font-extrabold text-slate-900 text-xs py-0.5 focus:outline-hidden w-24 bg-white text-left"
-                                      />
-                                      <button
-                                        type="button"
-                                        onClick={(e) => { e.stopPropagation(); saveInlineEdit(); }}
-                                        className="p-1 text-emerald-600 hover:bg-emerald-50 rounded cursor-pointer transition shrink-0"
-                                        title="Save"
+                              {getCategoryVendors(cat).map((v) => {
+                                const isSelected = project.selectedVendorIds?.[cat.id] === v.id;
+                                return (
+                                  <th key={v.id} className={`px-4 py-2.5 text-slate-800 text-[10.5px] relative group/vhead transition-all duration-200 ${isSelected ? "bg-emerald-50/70 border-x border-emerald-100" : ""}`}>
+                                    {editingField.type === "vendor-name" && editingField.id === v.id && editingField.catId === cat.id ? (
+                                      <div className="flex items-center gap-1 select-none justify-start">
+                                        <input
+                                          type="text"
+                                          value={editValue}
+                                          onChange={(e) => setEditValue(e.target.value)}
+                                          onKeyDown={(e) => { 
+                                            if (e.key === "Enter") { saveInlineEdit(); }
+                                            if (e.key === "Escape") { setEditingField({ type: null }); }
+                                          }}
+                                          autoFocus
+                                          className="bg-white border-b border-indigo-500 font-extrabold text-slate-900 text-xs py-0.5 focus:outline-hidden w-24 bg-white text-left"
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={(e) => { e.stopPropagation(); saveInlineEdit(); }}
+                                          className="p-1 text-emerald-600 hover:bg-emerald-50 rounded cursor-pointer transition shrink-0"
+                                          title="Save"
+                                        >
+                                          <Check size={11} className="stroke-[3]" />
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={(e) => { e.stopPropagation(); setEditingField({ type: null }); }}
+                                          className="p-1 text-rose-500 hover:bg-rose-50 rounded cursor-pointer transition shrink-0"
+                                          title="Cancel"
+                                        >
+                                          <X size={11} className="stroke-[3]" />
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <span
+                                        onClick={() => startEditing("vendor-name", v.id, undefined, v.name, cat.id)}
+                                        className="cursor-pointer hover:text-indigo-600 border-b border-transparent hover:border-slate-350 select-all font-extrabold text-slate-900"
+                                        title="Click to rename vendor"
                                       >
-                                        <Check size={11} className="stroke-[3]" />
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={(e) => { e.stopPropagation(); setEditingField({ type: null }); }}
-                                        className="p-1 text-rose-500 hover:bg-rose-50 rounded cursor-pointer transition shrink-0"
-                                        title="Cancel"
-                                      >
-                                        <X size={11} className="stroke-[3]" />
-                                      </button>
-                                    </div>
-                                  ) : (
-                                    <span
-                                      onClick={() => startEditing("vendor-name", v.id, undefined, v.name)}
-                                      className="cursor-pointer hover:text-indigo-600 border-b border-transparent hover:border-slate-350 select-all font-extrabold text-slate-900"
-                                      title="Click to rename vendor"
-                                    >
-                                      {v.name}
-                                    </span>
-                                  )}
-                                </th>
-                              ))}
+                                        {v.name}
+                                      </span>
+                                    )}
+                                  </th>
+                                );
+                              })}
                               <th className="px-4 py-2.5 text-center text-[#0e7490] w-20 print:hidden text-[10px] uppercase">Actions</th>
                             </tr>
                           </thead>
@@ -4586,7 +4699,7 @@ export default function App() {
                                 {getCategoryVendors(cat).map((v) => {
                                   const value = row.values?.[v.id] ?? "";
                                   return (
-                                    <td key={v.id} className="px-4 py-3">
+                                    <td key={v.id} className={`px-4 py-3 transition-all duration-200 ${project.selectedVendorIds?.[cat.id] === v.id ? "bg-emerald-50/45 border-x border-emerald-100" : ""}`}>
                                       <div className="relative group/field flex flex-col items-stretch">
                                         <textarea
                                           rows={2}
@@ -4890,218 +5003,217 @@ export default function App() {
                     <th scope="col" className="px-4 py-3.5 text-left text-xs font-bold text-slate-500 uppercase tracking-wider w-1/3">
                       Category
                     </th>
-                    {project.vendors.map((v) => (
-                      <th key={v.id} scope="col" className="px-4 py-3.5 text-right text-xs font-bold text-slate-700 uppercase tracking-wider print:text-slate-700 relative group/vhead">
-                        {editingField.type === "vendor-name" && editingField.id === v.id ? (
-                          <div className="flex items-center gap-1 select-none text-right justify-end">
-                            <input
-                              type="text"
-                              value={editValue}
-                              onChange={(e) => setEditValue(e.target.value)}
-                              onKeyDown={(e) => { 
-                                if (e.key === "Enter") { saveInlineEdit(); }
-                                if (e.key === "Escape") { setEditingField({ type: null }); }
-                              }}
-                              autoFocus
-                              className="text-right font-extrabold text-slate-900 border-b border-indigo-500 text-xs py-0.5 focus:outline-hidden w-24 bg-white"
-                            />
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); saveInlineEdit(); }}
-                              className="p-1 text-emerald-600 hover:bg-emerald-50 rounded cursor-pointer transition shrink-0"
-                              title="Save"
-                            >
-                              <Check size={11} className="stroke-[3]" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); setEditingField({ type: null }); }}
-                              className="p-1 text-rose-500 hover:bg-rose-50 rounded cursor-pointer transition shrink-0"
-                              title="Cancel"
-                            >
-                              <X size={11} className="stroke-[3]" />
-                            </button>
-                          </div>
-                        ) : (
-                          <span
-                            onClick={() => startEditing("vendor-name", v.id, undefined, v.name)}
-                            className="cursor-pointer hover:text-indigo-600 select-all border-b border-transparent hover:border-slate-300 font-extrabold text-slate-955"
-                            title="Click to rename vendor column"
-                          >
-                            {v.name}
-                          </span>
-                        )}
-                      </th>
-                    ))}
+                    <th scope="col" className="px-4 py-3.5 text-left text-xs font-bold text-slate-500 uppercase tracking-wider w-1/3">
+                      Selected Vendor Name
+                    </th>
+                    <th scope="col" className="px-4 py-3.5 text-right text-xs font-bold text-slate-500 uppercase tracking-wider">
+                      Amount
+                    </th>
                   </tr>
                 </thead>
 
                 <tbody className="divide-y divide-[#c0e6ee]/75 bg-[#fcfefef0] print:divide-slate-200 print:bg-white">
                   
-                  {project.categories.map((cat) => (
-                    <tr key={cat.id} className="hover:bg-[#e0f2f5]/30 transition print:hover:bg-transparent">
-                      <td className="px-4 py-3.5 text-sm font-semibold text-slate-700 print:text-slate-800">
-                        {cat.name}
-                      </td>
-                      
-                      {project.vendors.map((v) => {
-                        const total = getCategoryTotalForVendor(cat.id, v.id);
-                        
-                        // Calculate category sum average across all vendors
-                        const catTotals = project.vendors.map(vendor => getCategoryTotalForVendor(cat.id, vendor.id));
-                        const sumTotals = catTotals.reduce((a, b) => a + b, 0);
-                        const avgTotal = catTotals.length > 0 ? sumTotals / catTotals.length : 0;
-                        
-                        return (
-                           <td key={v.id} className="px-4 py-3.5 text-right font-mono text-sm antialiased text-slate-800 print:text-slate-700">
-                            <div className="flex flex-col items-end justify-center">
-                              {total === 0 ? (
-                                <span className="text-slate-450 select-none print:text-slate-450">—</span>
-                              ) : (
-                                <>
-                                  <span className="font-semibold text-slate-900">{formatCurrency(total)}</span>
-                                  {showDualConversion(total)}
-                                </>
-                              )}
-                              
-                              {project.vendors.length > 1 && avgTotal > 0 && total > 0 && (() => {
-                                const diffPercent = ((total - avgTotal) / avgTotal) * 100;
-                                if (Math.abs(diffPercent) < 0.1) {
-                                  return (
-                                    <span className="text-[9px] text-slate-400 font-mono mt-0.5 select-none opacity-60 print:text-slate-450">
-                                      average
-                                    </span>
-                                  );
-                                }
-                                const isHigher = diffPercent > 0;
-                                return (
-                                  <span 
-                                    className={`text-[9px] font-mono mt-0.5 select-none flex items-center gap-0.5 ${
-                                      isHigher ? "text-rose-600 print:text-rose-600 font-semibold" : "text-emerald-650 print:text-emerald-700 font-bold"
-                                    }`}
-                                    title={`${isHigher ? "Higher" : "Lower"} than row average by ${Math.abs(diffPercent).toFixed(1)}%`}
-                                  >
-                                    {isHigher ? "▲" : "▼"} {Math.abs(diffPercent).toFixed(1)}%
-                                  </span>
-                                );
-                              })()}
-                            </div>
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
+                  {project.categories.map((cat) => {
+                    const selectedVendorId = project.selectedVendorIds?.[cat.id];
+                    const selectedVendor = selectedVendorId
+                      ? (getCategoryVendors(cat).find(v => v.id === selectedVendorId) || project.vendors.find(v => v.id === selectedVendorId))
+                      : null;
+                    
+                    const breakdown = selectedVendorId 
+                      ? getCategoryTotalBreakdown(cat.id, selectedVendorId)
+                      : { oneTime: 0, recurring: 0 };
+                    const total = breakdown.oneTime + breakdown.recurring;
 
-                  {/* Summary attachments info row inside Section 3 */}
-                  <tr className="bg-[#f0f9fa]/40 border-t border-[#c0e6ee]/40 print:hidden text-xs">
-                    <td className="px-4 py-3 font-semibold text-slate-500 uppercase text-[10px] select-none">
-                      <div className="flex items-center gap-1.5 text-slate-500">
-                        <Paperclip size={12} className="text-cyan-600" />
-                        Dossier Files
-                      </div>
-                    </td>
-                    {project.vendors.map((vendor) => {
-                      const vendorFiles = getFilesForVendor(vendor.id);
-                      return (
-                        <td key={vendor.id} className="px-4 py-3 text-right">
-                          <div className="flex flex-col items-end gap-1 text-[10px]">
-                            {vendorFiles.length > 0 ? (
-                              <div className="flex flex-col items-end gap-0.5 font-medium max-w-[190px]">
-                                {vendorFiles.map((f) => (
-                                  <div 
-                                    key={f.id} 
-                                    className="text-[9px] text-cyan-850 hover:text-cyan-950 truncate max-w-full font-mono cursor-pointer flex items-center gap-1"
-                                    onClick={() => setActiveViewFile(f)}
-                                    title="Click to view"
-                                  >
-                                    <span className="underline">{f.name}</span>
+                    const recurringLabel = tcoYears === 1 ? "Year 1 Annual Fee" : `${tcoYears} Year TCO Recurring`;
+
+                    return (
+                      <tr key={cat.id} className="hover:bg-[#e0f2f5]/30 transition print:hover:bg-transparent">
+                        {/* Col 1: Category Name (Editable) */}
+                        <td className="px-4 py-4 text-sm font-semibold text-slate-700 print:text-slate-800">
+                          {editingField.type === "category-name" && editingField.id === cat.id ? (
+                            <div className="flex items-center gap-1 select-none">
+                              <input
+                                type="text"
+                                value={editValue}
+                                onChange={(e) => setEditValue(e.target.value)}
+                                onKeyDown={(e) => { 
+                                  if (e.key === "Enter") { saveInlineEdit(); }
+                                  if (e.key === "Escape") { setEditingField({ type: null }); }
+                                }}
+                                autoFocus
+                                className="font-bold text-slate-900 border-b border-indigo-500 text-sm py-0.5 focus:outline-hidden w-full max-w-[200px] bg-white"
+                              />
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); saveInlineEdit(); }}
+                                className="p-1 text-emerald-600 hover:bg-emerald-50 rounded cursor-pointer transition shrink-0"
+                                title="Save"
+                              >
+                                <Check size={11} className="stroke-[3]" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); setEditingField({ type: null }); }}
+                                className="p-1 text-rose-500 hover:bg-rose-50 rounded cursor-pointer transition shrink-0"
+                                title="Cancel"
+                              >
+                                <X size={11} className="stroke-[3]" />
+                              </button>
+                            </div>
+                          ) : (
+                            <span
+                              onClick={() => startEditing("category-name", cat.id, undefined, cat.name)}
+                              className="cursor-pointer hover:text-indigo-600 select-all border-b border-transparent hover:border-slate-300 font-semibold text-slate-700 print:text-slate-800"
+                              title="Click to rename category"
+                            >
+                              {cat.name}
+                            </span>
+                          )}
+                        </td>
+
+                        {/* Col 2: Selected Vendor Name (Editable Rename + Selection Dropdown) */}
+                        <td className="px-4 py-4 text-sm text-slate-700">
+                          <div className="flex flex-col gap-1.5 items-start">
+                            {selectedVendor ? (
+                              <div className="flex items-center gap-2">
+                                {editingField.type === "vendor-name" && editingField.id === selectedVendor.id ? (
+                                  <div className="flex items-center gap-1 select-none">
+                                    <input
+                                      type="text"
+                                      value={editValue}
+                                      onChange={(e) => setEditValue(e.target.value)}
+                                      onKeyDown={(e) => { 
+                                        if (e.key === "Enter") { saveInlineEdit(); }
+                                        if (e.key === "Escape") { setEditingField({ type: null }); }
+                                      }}
+                                      autoFocus
+                                      className="font-extrabold text-slate-900 border-b border-indigo-500 text-xs py-0.5 focus:outline-hidden w-32 bg-white"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={(e) => { e.stopPropagation(); saveInlineEdit(); }}
+                                      className="p-1 text-emerald-600 hover:bg-emerald-50 rounded cursor-pointer transition shrink-0"
+                                      title="Save"
+                                    >
+                                      <Check size={11} className="stroke-[3]" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => { e.stopPropagation(); setEditingField({ type: null }); }}
+                                      className="p-1 text-rose-500 hover:bg-rose-50 rounded cursor-pointer transition shrink-0"
+                                      title="Cancel"
+                                    >
+                                      <X size={11} className="stroke-[3]" />
+                                    </button>
                                   </div>
-                                ))}
+                                ) : (
+                                  <div className="flex items-center gap-1.5">
+                                    <span
+                                      onClick={() => startEditing("vendor-name", selectedVendor.id, undefined, selectedVendor.name)}
+                                      className="cursor-pointer hover:text-indigo-600 font-extrabold text-emerald-800 border-b border-transparent hover:border-slate-300 bg-emerald-50/40 px-2 py-0.5 rounded"
+                                      title="Click to rename vendor globally"
+                                    >
+                                      {selectedVendor.name}
+                                    </span>
+                                    {/* Small dossier file indicators if any attached */}
+                                    {(() => {
+                                      const vendorFiles = getFilesForVendor(selectedVendor.id);
+                                      if (vendorFiles.length > 0) {
+                                        return (
+                                          <div className="flex items-center gap-1 print:hidden" title={`${vendorFiles.length} file(s) attached`}>
+                                            <Paperclip size={10} className="text-cyan-600 animate-pulse" />
+                                            <span className="text-[9px] text-slate-400 font-mono font-bold">({vendorFiles.length})</span>
+                                          </div>
+                                        );
+                                      }
+                                      return null;
+                                    })()}
+                                  </div>
+                                )}
                               </div>
                             ) : (
-                              <span className="text-[10px] text-slate-400 italic">None attached</span>
+                              <span className="text-slate-400 italic text-xs font-medium">None selected</span>
                             )}
+
+                            {/* Dropdown to change or clear selection */}
+                            <select
+                              value={selectedVendorId || ""}
+                              onChange={(e) => handleSelectVendor(cat.id, e.target.value)}
+                              className="block w-full max-w-[170px] text-[10px] font-bold text-[#0e7490] bg-[#e0f7fa]/35 hover:bg-[#e0f7fa]/60 border border-[#bae6fd] rounded-md px-2 py-1 focus:ring-1 focus:ring-cyan-500 focus:outline-hidden cursor-pointer print:hidden transition"
+                            >
+                              <option value="">-- Choose Vendor --</option>
+                              {getCategoryVendors(cat).map((v) => (
+                                <option key={v.id} value={v.id}>
+                                  {v.name}
+                                </option>
+                              ))}
+                            </select>
                           </div>
                         </td>
-                      );
-                    })}
-                  </tr>
 
-                  {/* GRAND TOTAL BLOCK */}
-                  <tr className="bg-[#e4f3f6] font-bold border-t-2 border-[#b0dfeb] print:bg-slate-50 print:border-slate-300">
-                    <td className="px-4 py-4 text-xs font-extrabold uppercase text-[#0f766e] tracking-wider print:text-[#0f766e]">
-                      <div className="flex flex-col gap-2 items-start">
-                        <span>GRAND TOTAL</span>
-                        <button
-                          type="button"
-                          onClick={() => setShowGrandTotalBreakdown(!showGrandTotalBreakdown)}
-                          className="text-[9px] font-bold text-teal-800 hover:text-teal-950 bg-teal-100 hover:bg-teal-200 border border-teal-250 px-2 py-1 rounded-sm transition select-none print:hidden cursor-pointer"
-                          title="Toggle Onetime vs Other amounts breakdown details"
-                        >
-                          {showGrandTotalBreakdown ? "Hide Formula" : "Show Formula Details"}
-                        </button>
-                      </div>
-                    </td>
-                    
-                    {project.vendors.map((v) => {
-                      const grandTotalVal = getVendorGrandTotal(v.id);
-                      const isCheapest = briefing && briefing.cheapest.id === v.id && grandTotalVal > 0;
-                      
-                      const breakdown = getVendorGrandTotalBreakdown(v.id);
-                      
-                      // Calculate average grand total across all vendors
-                      const grandTotalsList = project.vendors.map(vendor => getVendorGrandTotal(vendor.id));
-                      const grandTotalsSum = grandTotalsList.reduce((a, b) => a + b, 0);
-                      const grandAvg = grandTotalsList.length > 0 ? grandTotalsSum / grandTotalsList.length : 0;
-                      
-                      const diffPercent = grandAvg > 0 ? ((grandTotalVal - grandAvg) / grandAvg) * 100 : 0;
-                      
-                      return (
-                        <td key={v.id} className="px-4 py-4 text-right">
+                        {/* Col 3: Amount with Breakdown */}
+                        <td className="px-4 py-4 text-right font-mono text-sm antialiased">
+                          {selectedVendorId ? (
+                            <div className="flex flex-col items-end">
+                              {/* Amount Display */}
+                              <span className="font-mono text-base font-black antialiased text-emerald-800">
+                                {formatCurrency(total)}
+                              </span>
+                              
+                              {/* Example format: ($2,000 One-time + $6,000 Year 1 Annual Fee) */}
+                              <span className="text-[10px] text-slate-500 font-sans tracking-tight leading-tight mt-1 select-none text-right block font-semibold">
+                                ({formatCurrency(breakdown.oneTime)} One-time + {formatCurrency(breakdown.recurring)} {recurringLabel})
+                              </span>
+
+                              {/* Dual conversion display for UAE standard (or other) */}
+                              {showDualConversion(total, "text-[10px] text-teal-850 font-bold font-mono leading-none mt-1 select-none text-right block")}
+                            </div>
+                          ) : (
+                            <span className="text-slate-400 italic text-xs select-none">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                  {/* GRAND TOTAL BLOCK - MATCHED TO 3-COLUMNS */}
+                  {(() => {
+                    const selectedOptionsGrandTotalBreakdown = getSelectedOptionsGrandTotalBreakdown();
+                    const selectedOptionsGrandTotal = selectedOptionsGrandTotalBreakdown.oneTime + selectedOptionsGrandTotalBreakdown.recurring;
+                    const grandRecurringLabel = tcoYears === 1 ? "Year 1 Annual Fee" : `${tcoYears} Year TCO Recurring`;
+
+                    return (
+                      <tr className="bg-[#e4f3f6] font-bold border-t-2 border-[#b0dfeb] print:bg-slate-50 print:border-slate-300">
+                        {/* Col 1: GRAND TOTAL Label */}
+                        <td className="px-4 py-5 text-xs font-black uppercase text-[#0f766e] tracking-wider print:text-[#0f766e]">
+                          GRAND TOTAL
+                        </td>
+
+                        {/* Col 2: Selected Options Summary */}
+                        <td className="px-4 py-5 text-left font-sans text-xs text-slate-600">
+                          <span className="font-extrabold text-[#0f766e] bg-[#ccedf2] px-2 py-1 rounded">
+                            Consolidated TCO Solution
+                          </span>
+                        </td>
+
+                        {/* Col 3: Grand Total Amount and Breakdown */}
+                        <td className="px-4 py-5 text-right font-mono text-sm antialiased bg-emerald-50/40 border-x border-emerald-150/75">
                           <div className="flex flex-col items-end">
-                            <span className={`font-mono text-base font-black antialiased ${isCheapest ? "text-emerald-700 print:text-emerald-800" : "text-slate-800 print:text-slate-900"}`}>
-                              {formatCurrency(grandTotalVal)}
+                            <span className="font-mono text-base font-black antialiased text-[#0f766e]">
+                              {formatCurrency(selectedOptionsGrandTotal)}
                             </span>
                             
-                            {showGrandTotalBreakdown && grandTotalVal > 0 && (
-                              <span className="text-[10px] text-[#0f766e] font-sans tracking-tight leading-tight mt-1 select-none text-right block font-semibold">
-                                {formatCurrency(breakdown.oneTime)} <span className="text-slate-450 font-normal">one-time</span> + {formatCurrency(breakdown.recurring)} <span className="text-slate-450 font-normal">other amounts</span>
-                              </span>
-                            )}
-                            
-                            {showDualConversion(grandTotalVal, "text-xs text-teal-850 font-bold font-mono drop-shadow-[0_1px_1px_rgba(255,255,255,0.85)] leading-tight mt-1.5 select-none text-right block")}
-                            
-                            {project.vendors.length > 1 && grandAvg > 0 && grandTotalVal > 0 && (() => {
-                              if (Math.abs(diffPercent) < 0.1) {
-                                return (
-                                  <span className="text-[9px] text-slate-400 font-mono mt-0.5 select-none opacity-60 print:text-slate-400">
-                                    average
-                                  </span>
-                                );
-                              }
-                              const isHigher = diffPercent > 0;
-                              return (
-                                <span 
-                                  className={`text-[9px] font-mono mt-1 select-none flex items-center gap-0.5 ${
-                                    isHigher ? "text-rose-650 print:text-rose-650" : "text-emerald-650 print:text-emerald-700 font-bold"
-                                  }`}
-                                  title={`${isHigher ? "Higher" : "Lower"} than grand average by ${Math.abs(diffPercent).toFixed(1)}%`}
-                                >
-                                  {isHigher ? "▲" : "▼"} {Math.abs(diffPercent).toFixed(1)}%
-                                </span>
-                              );
-                            })()}
-                            
-                            {isCheapest && (
-                              <span className="text-[9px] text-emerald-800 font-extrabold bg-[#def7ec] border border-[#bdecda] px-1 py-0.5 rounded uppercase tracking-wider block mt-1.5 shadow-2xs print:bg-emerald-100 print:text-emerald-700">
-                                Best Price
-                              </span>
-                            )}
+                            <span className="text-[10px] text-[#0f766e] font-sans tracking-tight leading-tight mt-1 select-none text-right block font-extrabold">
+                              ({formatCurrency(selectedOptionsGrandTotalBreakdown.oneTime)} One-time + {formatCurrency(selectedOptionsGrandTotalBreakdown.recurring)} {grandRecurringLabel})
+                            </span>
+
+                            {showDualConversion(selectedOptionsGrandTotal, "text-xs text-teal-850 font-bold font-mono mt-1 select-none text-right block")}
                           </div>
                         </td>
-                      );
-                    })}
-                  </tr>
+                      </tr>
+                    );
+                  })()}
 
                 </tbody>
               </table>
