@@ -4294,6 +4294,27 @@ export default function App() {
                       </div>
                     </div>
 
+                    {/* Actions directly under each category table */}
+                    <div className="flex items-center gap-4 mt-3 print:hidden select-none">
+                      <button
+                        type="button"
+                        onClick={() => addCostComponent(cat.id)}
+                        className="text-xs font-bold text-indigo-650 hover:text-indigo-800 hover:bg-indigo-50/50 border border-indigo-150 rounded-lg px-3 py-1.5 flex items-center gap-1.5 cursor-pointer transition shadow-2xs"
+                        title="Add custom cost component row for this category table"
+                      >
+                        <Plus size={13} className="stroke-[2.5]" /> Add Component Cost Row
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={addNewVendor}
+                        className="text-xs font-bold text-slate-650 hover:text-slate-800 hover:bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 flex items-center gap-1.5 cursor-pointer transition shadow-2xs"
+                        title="Add new vendor column to comparison"
+                      >
+                        <Plus size={13} /> Add Vendor Column
+                      </button>
+                    </div>
+
                     {/* Category-level Financial Value Pick banner */}
                     {(() => {
                       const validVendorsWithTotals = project.vendors
