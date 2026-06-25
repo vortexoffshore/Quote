@@ -746,6 +746,11 @@ export default function App() {
     const category = project.categories.find(c => c.id === catId);
     if (!category) return { oneTime: 0, recurring: 0 };
     
+    // If category has its own vendor list and venId is not in it, return 0
+    if (category.vendors && !category.vendors.some(v => v.id === venId)) {
+      return { oneTime: 0, recurring: 0 };
+    }
+    
     let oneTime = 0;
     let recurring = 0;
     
@@ -856,6 +861,11 @@ export default function App() {
   const activeTotalsList = project.vendors.map(v => getVendorGrandTotal(v.id)).filter(t => t > 0);
   const avgProjectCost = activeTotalsList.length > 0 ? activeTotalsList.reduce((a, b) => a + b, 0) / activeTotalsList.length : 0;
 
+  // Helper to get vendors for a specific category or default to global vendors
+  const getCategoryVendors = (cat: Category): Vendor[] => {
+    return cat.vendors || project.vendors;
+  };
+
   // Field Edit Handlers
   const startEditing = (type: typeof editingField.type, id?: string, subId?: string, currentVal: string = "") => {
     setEditingField({ type, id, subId });
@@ -882,6 +892,15 @@ export default function App() {
       const vId = editingField.id;
       const newName = editValue.trim() || "Vendor";
       updated.vendors = updated.vendors.map(v => v.id === vId ? { ...v, name: newName } : v);
+      updated.categories = updated.categories.map(c => {
+        if (c.vendors) {
+          return {
+            ...c,
+            vendors: c.vendors.map(v => v.id === vId ? { ...v, name: newName } : v)
+          };
+        }
+        return c;
+      });
       updateCurrentProject(updated);
       showToast(`Vendor renamed to "${newName}"`);
     } else if (editingField.type === "category-name" && editingField.id) {
@@ -1122,7 +1141,8 @@ export default function App() {
     if (p.categoryQualitativeRows?.[catId] && p.categoryQualitativeRows[catId].length > 0) {
       return p.categoryQualitativeRows[catId];
     }
-    const vens = p.vendors || [];
+    const category = p.categories.find(c => c.id === catId);
+    const vens = category?.vendors || p.vendors || [];
     const defaultRows: QualitativeRow[] = [
       {
         id: `plan-model-${catId}`,
@@ -1236,11 +1256,13 @@ export default function App() {
   const addCategoryQualitativeRow = (catId: string) => {
     const currentRows = getCategoryQualitativeRows(project, catId);
     const randomHex = Math.random().toString(36).substring(2, 7);
+    const category = project.categories.find(c => c.id === catId);
+    const targetVendors = category?.vendors || project.vendors || [];
     const newRow: QualitativeRow = {
       id: `qual-${catId}-${randomHex}`,
       name: `New Parameter ${currentRows.length + 1}`,
       description: "Description of the criteria / milestone terms.",
-      values: project.vendors.reduce((acc, v) => {
+      values: targetVendors.reduce((acc, v) => {
         acc[v.id] = "";
         return acc;
       }, {} as Record<string, string>)
@@ -1379,27 +1401,58 @@ export default function App() {
   };
 
   // Add Vendor Column
-  const addNewVendor = () => {
+  const addNewVendor = (catId?: string) => {
     const randomHex = Math.random().toString(36).substring(2, 7);
     const newId = `vendor-${randomHex}`;
-    const newName = `New Vendor ${String.fromCharCode(65 + project.vendors.length)}`;
     
-    const updatedVendors = [...project.vendors, { id: newId, name: newName }];
+    let targetVendors = project.vendors;
+    if (catId) {
+      const cat = project.categories.find(c => c.id === catId);
+      if (cat) {
+        targetVendors = cat.vendors || project.vendors;
+      }
+    }
+    
+    const newName = `New Vendor ${String.fromCharCode(65 + targetVendors.length)}`;
+    const newVendor = { id: newId, name: newName };
+    
     const updatedCostValues = JSON.parse(JSON.stringify(project.costValues));
     
     project.categories.forEach(cat => {
-      if (!updatedCostValues[cat.id]) updatedCostValues[cat.id] = {};
-      cat.components.forEach(comp => {
-        if (!updatedCostValues[cat.id][comp.id]) updatedCostValues[cat.id][comp.id] = {};
-        updatedCostValues[cat.id][comp.id][newId] = 0;
-      });
+      if (!catId || cat.id === catId) {
+        if (!updatedCostValues[cat.id]) updatedCostValues[cat.id] = {};
+        cat.components.forEach(comp => {
+          if (!updatedCostValues[cat.id][comp.id]) updatedCostValues[cat.id][comp.id] = {};
+          updatedCostValues[cat.id][comp.id][newId] = 0;
+        });
+      }
     });
 
-    const updated: QuoteProject = {
-      ...project,
-      vendors: updatedVendors,
-      costValues: updatedCostValues,
-    };
+    let updated: QuoteProject;
+    if (catId) {
+      const updatedCategories = project.categories.map(c => {
+        if (c.id === catId) {
+          const currentVendors = c.vendors || project.vendors;
+          return {
+            ...c,
+            vendors: [...currentVendors, newVendor]
+          };
+        }
+        return c;
+      });
+      updated = {
+        ...project,
+        categories: updatedCategories,
+        costValues: updatedCostValues,
+      };
+    } else {
+      const updatedVendors = [...project.vendors, newVendor];
+      updated = {
+        ...project,
+        vendors: updatedVendors,
+        costValues: updatedCostValues,
+      };
+    }
 
     // Initialize qualitative scorecard
     setScorecards(prev => {
@@ -1414,7 +1467,7 @@ export default function App() {
     });
 
     updateCurrentProject(updated);
-    showToast(`Added ${newName}. Columns added to all cost tables.`);
+    showToast(`Added ${newName} to the table.`);
     // Auto edit vendor name
     setTimeout(() => {
       startEditing("vendor-name", newId, undefined, newName);
@@ -1422,33 +1475,68 @@ export default function App() {
   };
 
   // Delete Vendor Column
-  const deleteVendor = (venId: string, venName: string) => {
-    if (project.vendors.length <= 1) {
-      showToast("Cannot delete the last remaining vendor column.", "error");
+  const deleteVendor = (venId: string, venName: string, catId?: string) => {
+    let activeVendors = project.vendors;
+    if (catId) {
+      const cat = project.categories.find(c => c.id === catId);
+      if (cat) {
+        activeVendors = cat.vendors || project.vendors;
+      }
+    }
+
+    if (activeVendors.length <= 1) {
+      showToast("Cannot delete the last remaining vendor column in this table.", "error");
       return;
     }
 
     setConfirmDialog({
       title: "Delete Vendor Column",
-      message: `Are you sure you want to delete vendor "${venName}" and all associated cost entries?`,
+      message: `Are you sure you want to delete vendor "${venName}" and all associated cost entries for this table?`,
       onConfirm: () => {
-        const updatedVendors = project.vendors.filter(v => v.id !== venId);
         const updatedCostValues = JSON.parse(JSON.stringify(project.costValues));
 
-        // Prune values mapping
-        Object.keys(updatedCostValues).forEach(catId => {
-          Object.keys(updatedCostValues[catId]).forEach(compId => {
-            if (updatedCostValues[catId][compId]) {
-              delete updatedCostValues[catId][compId][venId];
+        let updated: QuoteProject;
+        if (catId) {
+          const updatedCategories = project.categories.map(c => {
+            if (c.id === catId) {
+              const currentVendors = c.vendors || project.vendors;
+              return {
+                ...c,
+                vendors: currentVendors.filter(v => v.id !== venId)
+              };
             }
+            return c;
           });
-        });
 
-        const updated: QuoteProject = {
-          ...project,
-          vendors: updatedVendors,
-          costValues: updatedCostValues
-        };
+          if (updatedCostValues[catId]) {
+            Object.keys(updatedCostValues[catId]).forEach(compId => {
+              if (updatedCostValues[catId][compId]) {
+                delete updatedCostValues[catId][compId][venId];
+              }
+            });
+          }
+
+          updated = {
+            ...project,
+            categories: updatedCategories,
+            costValues: updatedCostValues
+          };
+        } else {
+          const updatedVendors = project.vendors.filter(v => v.id !== venId);
+          Object.keys(updatedCostValues).forEach(cId => {
+            Object.keys(updatedCostValues[cId]).forEach(compId => {
+              if (updatedCostValues[cId][compId]) {
+                delete updatedCostValues[cId][compId][venId];
+              }
+            });
+          });
+
+          updated = {
+            ...project,
+            vendors: updatedVendors,
+            costValues: updatedCostValues
+          };
+        }
 
         updateCurrentProject(updated);
         showToast(`Deleted vendor "${venName}"`);
@@ -3519,7 +3607,7 @@ export default function App() {
                                 </th>
                                 
                                 {/* Vendor column names */}
-                                {project.vendors.map((vendor) => (
+                                {getCategoryVendors(cat).map((vendor) => (
                                   <th key={vendor.id} scope="col" className="px-4 py-3.5 text-right text-xs font-bold text-slate-400 uppercase tracking-widest relative group/vhead">
                                     <div className="flex items-center justify-end gap-1 group">
                                       {editingField.type === "vendor-name" && editingField.id === vendor.id ? (
@@ -3564,7 +3652,7 @@ export default function App() {
 
                                       {/* Inline Vendor Delete Button */}
                                       <button 
-                                        onClick={() => deleteVendor(vendor.id, vendor.name)} 
+                                        onClick={() => deleteVendor(vendor.id, vendor.name, cat.id)} 
                                         className="text-slate-400 hover:text-rose-500 rounded p-1 transition print:hidden ml-1 shrink-0"
                                         title={`Remove ${vendor.name} globally`}
                                       >
@@ -3648,15 +3736,14 @@ export default function App() {
                                         )}
                                       </div>
                                     </td>
-
-                                  {/* Input cell for each vendor column */}
-                                  {project.vendors.map((vendor) => {
+                                      {/* Input cell for each vendor column */}
+                                  {getCategoryVendors(cat).map((vendor) => {
                                     const rawVal = project.costValues[cat.id]?.[comp.id]?.[vendor.id] ?? 0;
                                     const factor = getComponentScaleFactor(comp.name, comp.id, tcoYears, cat.components);
                                     const scaledVal = rawVal * factor;
                                     
                                     // Calculate average across all vendors for this specific component line item
-                                    const compPrices = project.vendors.map(v => (project.costValues[cat.id]?.[comp.id]?.[v.id] ?? 0) * factor);
+                                    const compPrices = getCategoryVendors(cat).map(v => (project.costValues[cat.id]?.[comp.id]?.[v.id] ?? 0) * factor);
                                     const pricingSum = compPrices.reduce((a, b) => a + b, 0);
                                     const compAvg = compPrices.length > 0 ? pricingSum / compPrices.length : 0;
                                     
@@ -3699,7 +3786,7 @@ export default function App() {
                                           )}
  
                                           {/* Variance indicator relative to specific row average cost */}
-                                          {!isExcluded && project.vendors.length > 1 && compAvg > 0 && (() => {
+                                          {!isExcluded && getCategoryVendors(cat).length > 1 && compAvg > 0 && (() => {
                                             const diffPercent = ((scaledVal - compAvg) / compAvg) * 100;
                                             if (Math.abs(diffPercent) < 0.1) {
                                               return (
@@ -3720,14 +3807,14 @@ export default function App() {
                                               </span>
                                             );
                                           })()}
-
+ 
                                           {/* Expandable Category & Month-wise Breakdown button under the amount */}
                                           {!isExcluded && comp.name.toLowerCase().includes("annual") && (
                                             <button
                                               type="button"
                                               onClick={() => handleVendorTrackerToggle(cat.id, comp.id, vendor.id)}
                                               className={`mt-1.5 px-2 py-0.5 rounded text-[9px] font-extrabold uppercase tracking-wide transition border flex items-center justify-center gap-1 cursor-pointer select-none print:hidden ${
-                                                expandedTrackers[cat.id]?.[comp.id] && (trackerVendorSelections[`${cat.id}-${comp.id}`] || project.vendors[0]?.id) === vendor.id
+                                                expandedTrackers[cat.id]?.[comp.id] && (trackerVendorSelections[`${cat.id}-${comp.id}`] || getCategoryVendors(cat)[0]?.id) === vendor.id
                                                   ? "bg-cyan-600 hover:bg-cyan-700 text-white border-cyan-600" 
                                                   : "bg-cyan-50/75 hover:bg-cyan-100 text-cyan-700 border-cyan-200 hover:border-cyan-300"
                                               }`}
@@ -3741,7 +3828,7 @@ export default function App() {
                                       </td>
                                     );
                                   })}
-
+ 
                                   {/* Action column delete row/clone row */}
                                   <td className="px-2 text-center text-slate-300 hover:text-rose-500 cursor-pointer transition print:hidden">
                                     <div className="flex items-center justify-center gap-1">
@@ -3766,7 +3853,7 @@ export default function App() {
                                 </tr>
                                 {expandedTrackers[cat.id]?.[comp.id] && (
                                   <tr className="bg-slate-50/10 border-b border-cyan-100/50 print:bg-white" key={`${comp.id}-expanded-tracker`}>
-                                    <td colSpan={project.vendors.length + 2} className="px-4 py-3 bg-slate-50/15">
+                                    <td colSpan={getCategoryVendors(cat).length + 2} className="px-4 py-3 bg-slate-50/15">
                                       <div className="max-w-full overflow-hidden my-1">
                                         <MonthlyCostTrackerComponent 
                                           catId={cat.id} 
@@ -3787,11 +3874,11 @@ export default function App() {
                                   Total ({cat.name})
                                 </td>
 
-                                {project.vendors.map((vendor) => {
+                                {getCategoryVendors(cat).map((vendor) => {
                                   const catTotal = getCategoryTotalForVendor(cat.id, vendor.id);
                                   
                                   // Calculate average category totals across all vendors
-                                  const totalsList = project.vendors.map(v => getCategoryTotalForVendor(cat.id, v.id));
+                                  const totalsList = getCategoryVendors(cat).map(v => getCategoryTotalForVendor(cat.id, v.id));
                                   const totalSum = totalsList.reduce((a, b) => a + b, 0);
                                   const totalAvg = totalsList.length > 0 ? totalSum / totalsList.length : 0;
                                   
@@ -3808,7 +3895,7 @@ export default function App() {
                                           );
                                         })()}
                                         {showDualConversion(catTotal)}
-                                        {project.vendors.length > 1 && totalAvg > 0 && (() => {
+                                        {getCategoryVendors(cat).length > 1 && totalAvg > 0 && (() => {
                                           const diffPercent = ((catTotal - totalAvg) / totalAvg) * 100;
                                           if (Math.abs(diffPercent) < 0.1) {
                                             return (
@@ -3844,7 +3931,7 @@ export default function App() {
                                     Linked Attachments
                                   </div>
                                 </td>
-                                {project.vendors.map((vendor) => {
+                                {getCategoryVendors(cat).map((vendor) => {
                                   const vendorFiles = getFilesForVendor(vendor.id);
                                   return (
                                     <td key={vendor.id} className="px-4 py-3 text-right">
@@ -4017,11 +4104,11 @@ export default function App() {
                             </thead>
 
                             <tbody className="divide-y divide-slate-150 bg-white">
-                              {project.vendors.map((vendor) => {
+                              {getCategoryVendors(cat).map((vendor) => {
                                 const catTotal = getCategoryTotalForVendor(cat.id, vendor.id);
 
                                 // Calculated values or averages for the last row totals
-                                const totalsList = project.vendors.map(v => getCategoryTotalForVendor(cat.id, v.id));
+                                const totalsList = getCategoryVendors(cat).map(v => getCategoryTotalForVendor(cat.id, v.id));
                                 const totalSum = totalsList.reduce((a, b) => a + b, 0);
                                 const totalAvg = totalsList.length > 0 ? totalSum / totalsList.length : 0;
 
@@ -4147,7 +4234,7 @@ export default function App() {
                                       const scaledVal = rawVal * factor;
 
                                       // Calculate average for this component column across all vendors
-                                      const compPrices = project.vendors.map(v => (project.costValues[cat.id]?.[comp.id]?.[v.id] ?? 0) * factor);
+                                      const compPrices = getCategoryVendors(cat).map(v => (project.costValues[cat.id]?.[comp.id]?.[v.id] ?? 0) * factor);
                                       const pricingSum = compPrices.reduce((a, b) => a + b, 0);
                                       const compAvg = compPrices.length > 0 ? pricingSum / compPrices.length : 0;
 
@@ -4190,7 +4277,7 @@ export default function App() {
                                             )}
 
                                             {/* Variance indicator relative to column average */}
-                                            {!isExcluded && project.vendors.length > 1 && compAvg > 0 && (() => {
+                                            {!isExcluded && getCategoryVendors(cat).length > 1 && compAvg > 0 && (() => {
                                               const diffPercent = ((scaledVal - compAvg) / compAvg) * 100;
                                               if (Math.abs(diffPercent) < 0.1) {
                                                 return (
@@ -4248,7 +4335,7 @@ export default function App() {
                                           );
                                         })()}
                                         {showDualConversion(catTotal)}
-                                        {project.vendors.length > 1 && totalAvg > 0 && (() => {
+                                        {getCategoryVendors(cat).length > 1 && totalAvg > 0 && (() => {
                                           const diffPercent = ((catTotal - totalAvg) / totalAvg) * 100;
                                           if (Math.abs(diffPercent) < 0.1) {
                                             return (
@@ -4275,7 +4362,7 @@ export default function App() {
                                     {/* Action column to delete vendor */}
                                     <td className="px-2 text-center text-slate-300 hover:text-rose-500 cursor-pointer transition print:hidden">
                                       <button 
-                                        onClick={() => deleteVendor(vendor.id, vendor.name)}
+                                        onClick={() => deleteVendor(vendor.id, vendor.name, cat.id)}
                                         className="opacity-45 hover:opacity-100 group-hover/row:opacity-100 hover:scale-110 p-1 text-slate-400 hover:text-rose-500 rounded transition duration-150"
                                         title={`Remove ${vendor.name} globally`}
                                       >
@@ -4307,7 +4394,7 @@ export default function App() {
 
                       <button
                         type="button"
-                        onClick={addNewVendor}
+                        onClick={() => addNewVendor(cat.id)}
                         className="text-xs font-bold text-slate-650 hover:text-slate-800 hover:bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 flex items-center gap-1.5 cursor-pointer transition shadow-2xs"
                         title="Add new vendor column to comparison"
                       >
@@ -4317,7 +4404,7 @@ export default function App() {
 
                     {/* Category-level Financial Value Pick banner */}
                     {(() => {
-                      const validVendorsWithTotals = project.vendors
+                      const validVendorsWithTotals = getCategoryVendors(cat)
                         .map(v => {
                           const catTotalVal = getCategoryTotalForVendor(cat.id, v.id);
                           return { vendor: v, total: catTotalVal };
@@ -4431,7 +4518,7 @@ export default function App() {
                           <thead>
                             <tr className="bg-[#e4f3f6] border-b border-[#bfe2ea] text-slate-850 font-extrabold tracking-wide">
                               <th className="px-4 py-2.5 w-64 uppercase text-[#0e7490] select-none text-[10px]">Qualitative Parameter</th>
-                              {project.vendors.map((v) => (
+                              {getCategoryVendors(cat).map((v) => (
                                 <th key={v.id} className="px-4 py-2.5 text-slate-800 text-[10.5px] relative group/vhead">
                                   {editingField.type === "vendor-name" && editingField.id === v.id ? (
                                     <div className="flex items-center gap-1 select-none justify-start">
@@ -4496,7 +4583,7 @@ export default function App() {
                                     placeholder="Describe parameter criteria..."
                                   />
                                 </td>
-                                {project.vendors.map((v) => {
+                                {getCategoryVendors(cat).map((v) => {
                                   const value = row.values?.[v.id] ?? "";
                                   return (
                                     <td key={v.id} className="px-4 py-3">
@@ -4567,7 +4654,7 @@ export default function App() {
                       </button>
 
                       <button
-                        onClick={addNewVendor}
+                        onClick={() => addNewVendor(cat.id)}
                         className="text-xs font-bold text-slate-500 hover:text-slate-800 hover:bg-slate-50 border border-transparent rounded-lg px-3 py-1.5 flex items-center gap-1 cursor-pointer transition"
                       >
                         <Plus size={14} /> Add Vendor Column

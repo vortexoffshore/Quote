@@ -12,6 +12,7 @@ export interface Category {
   id: string;
   name: string;
   components: CostComponent[];
+  vendors?: Vendor[];
 }
 
 export interface EvaluationCriteria {
