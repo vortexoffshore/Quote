@@ -3641,16 +3641,34 @@ export default function App() {
                           style={{ backgroundColor: Object.values(CATEGORY_COLORS)[catIdx % Object.values(CATEGORY_COLORS).length] || CATEGORY_COLORS.default }}
                         ></span>
                         {editingField.type === "category-name" && editingField.id === cat.id ? (
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 select-none">
                             <input
                               type="text"
                               value={editValue}
                               onChange={(e) => setEditValue(e.target.value)}
-                              onBlur={saveInlineEdit}
-                              onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
+                              onKeyDown={(e) => { 
+                                if (e.key === "Enter") { saveInlineEdit(); }
+                                if (e.key === "Escape") { setEditingField({ type: null }); }
+                              }}
                               autoFocus
-                              className="text-lg font-bold text-slate-900 border-b border-indigo-500 focus:outline-hidden"
+                              className="text-lg font-bold text-slate-900 border-b border-indigo-500 focus:outline-hidden bg-white px-1"
                             />
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); saveInlineEdit(); }}
+                              className="p-1 text-emerald-600 hover:bg-emerald-50 rounded cursor-pointer transition shrink-0"
+                              title="Save"
+                            >
+                              <Check size={14} className="stroke-[3]" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); setEditingField({ type: null }); }}
+                              className="p-1 text-rose-500 hover:bg-rose-50 rounded cursor-pointer transition shrink-0"
+                              title="Cancel"
+                            >
+                              <X size={14} className="stroke-[3]" />
+                            </button>
                           </div>
                         ) : (
                           <h4 
