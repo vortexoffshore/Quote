@@ -3115,82 +3115,88 @@ export default function App() {
                     <span className="text-[11px] font-extrabold uppercase tracking-widest text-emerald-700">Financial Value Pick</span>
                     <Award size={16} className="text-emerald-600" />
                   </div>
-                  {briefing && briefing.cheapest.total > 0 ? (
-                    <div className="flex flex-col gap-2">
-                      {/* Cost Components split category-wise */}
-                      <div className="mt-2 border-t border-emerald-200/30 pt-2.5 flex flex-col gap-4 max-h-[250px] overflow-y-auto pr-1">
-                        {project.categories.map(cat => {
-                          // Find cheapest vendor FOR THIS SPECIFIC CATEGORY
-                          const categoryVendors = project.vendors
-                            .map(v => {
-                              const total = getCategoryTotalForVendor(cat.id, v.id);
-                              return { vendor: v, total };
-                            })
-                            .filter(x => x.total > 0)
-                            .sort((a, b) => a.total - b.total);
+                  {(() => {
+                    const selectedOptionsGrandTotalBreakdown = getSelectedOptionsGrandTotalBreakdown();
+                    const selectedOptionsGrandTotal = selectedOptionsGrandTotalBreakdown.oneTime + selectedOptionsGrandTotalBreakdown.recurring;
 
-                          const bestCatPick = categoryVendors[0] || null;
-                          if (!bestCatPick) return null;
+                    if (selectedOptionsGrandTotal > 0) {
+                      return (
+                        <div className="flex flex-col gap-2">
+                          {/* Cost Components split category-wise */}
+                          <div className="mt-2 border-t border-emerald-200/30 pt-2.5 flex flex-col gap-4 max-h-[250px] overflow-y-auto pr-1">
+                            {project.categories.map(cat => {
+                              const selectedVendorId = project.selectedVendorIds?.[cat.id];
+                              if (!selectedVendorId) return null;
 
-                          // Retrieve components matching best vendor for this category
-                          const validCompItems = cat.components.map(comp => {
-                            const isExcluded = isComponentExcluded(cat.id, comp.id);
-                            if (isExcluded) return null;
-                            const rawVal = project.costValues[cat.id]?.[comp.id]?.[bestCatPick.vendor.id] ?? 0;
-                            const factor = getComponentScaleFactor(comp.name, comp.id, tcoYears, cat.components);
-                            const scaledVal = rawVal * factor;
-                            if (scaledVal === 0) return null;
-                            return { comp, scaledVal, factor };
-                          }).filter((item): item is { comp: CostComponent; scaledVal: number; factor: number } => item !== null);
+                              const selectedVendor = getCategoryVendors(cat).find(v => v.id === selectedVendorId) || project.vendors.find(v => v.id === selectedVendorId);
+                              if (!selectedVendor) return null;
 
-                          return (
-                            <div key={cat.id} className="border-b border-slate-100/40 pb-2 flex flex-col gap-1.5">
-                              {/* Category Header */}
-                              <div className="flex items-center justify-between font-extrabold text-[10px] text-teal-850 tracking-wider uppercase">
-                                <span className="flex items-center gap-1">📁 {cat.name}</span>
-                              </div>
-                              
-                              {/* Category Specific Financial Pick Banner */}
-                              <div className="flex items-center justify-between text-[11px] font-black text-emerald-800 bg-emerald-100/40 border border-emerald-200/45 px-2 py-1 rounded select-none">
-                                <span className="flex items-center gap-1">🏆 {bestCatPick.vendor.name}</span>
-                                <span className="font-mono">{formatCurrency(bestCatPick.total)}</span>
-                              </div>
+                              const breakdown = getCategoryTotalBreakdown(cat.id, selectedVendorId);
+                              const total = breakdown.oneTime + breakdown.recurring;
 
-                              {/* Components */}
-                              {validCompItems.length > 0 && (
-                                <div className="flex flex-col gap-1 pl-2.5 mb-1.5">
-                                  {validCompItems.map(({ comp, scaledVal, factor }) => (
-                                    <div key={`${cat.id}-${comp.id}`} className="flex items-center justify-between text-[10px] font-semibold leading-tight py-0.5 text-slate-655">
-                                      <span className="truncate max-w-[140px]" title={comp.name}>
-                                        • {comp.name} {factor > 1 ? `(x${factor})` : ""}
-                                      </span>
-                                      <span className="font-mono text-slate-700 shrink-0 font-bold">
-                                        {formatCurrency(scaledVal)}
-                                      </span>
+                              // Retrieve components matching selected vendor for this category
+                              const validCompItems = cat.components.map(comp => {
+                                const isExcluded = isComponentExcluded(cat.id, comp.id);
+                                if (isExcluded) return null;
+                                const rawVal = project.costValues[cat.id]?.[comp.id]?.[selectedVendorId] ?? 0;
+                                const factor = getComponentScaleFactor(comp.name, comp.id, tcoYears, cat.components);
+                                const scaledVal = rawVal * factor;
+                                if (scaledVal === 0) return null;
+                                return { comp, scaledVal, factor };
+                              }).filter((item): item is { comp: CostComponent; scaledVal: number; factor: number } => item !== null);
+
+                              return (
+                                <div key={cat.id} className="border-b border-slate-100/40 pb-2 flex flex-col gap-1.5">
+                                  {/* Category Header */}
+                                  <div className="flex items-center justify-between font-extrabold text-[10px] text-teal-850 tracking-wider uppercase">
+                                    <span className="flex items-center gap-1">📁 {cat.name}</span>
+                                  </div>
+                                  
+                                  {/* Category Specific Selected Vendor Banner */}
+                                  <div className="flex items-center justify-between text-[11px] font-black text-emerald-800 bg-emerald-100/40 border border-emerald-200/45 px-2 py-1 rounded select-none">
+                                    <span className="flex items-center gap-1">🏆 {selectedVendor.name}</span>
+                                    <span className="font-mono">{formatCurrency(total)}</span>
+                                  </div>
+
+                                  {/* Components */}
+                                  {validCompItems.length > 0 && (
+                                    <div className="flex flex-col gap-1 pl-2.5 mb-1.5">
+                                      {validCompItems.map(({ comp, scaledVal, factor }) => (
+                                        <div key={`${cat.id}-${comp.id}`} className="flex items-center justify-between text-[10px] font-semibold leading-tight py-0.5 text-slate-655">
+                                          <span className="truncate max-w-[140px]" title={comp.name}>
+                                            • {comp.name} {factor > 1 ? `(x${factor})` : ""}
+                                          </span>
+                                          <span className="font-mono text-slate-700 shrink-0 font-bold">
+                                            {formatCurrency(scaledVal)}
+                                          </span>
+                                        </div>
+                                      ))}
                                     </div>
-                                  ))}
+                                  )}
                                 </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
+                              );
+                            })}
+                          </div>
 
-                      {/* Small font Grand Total footer per instructions */}
-                      <div className="mt-3 border-t-2 border-double border-emerald-205 pt-2.5 flex items-center justify-between">
-                        <span className="text-[10px] font-black text-slate-655 uppercase tracking-widest">TCO Total</span>
-                        <div className="flex flex-col items-end">
-                          <span className="font-mono text-sm font-extrabold text-emerald-800">{formatCurrency(briefing.cheapest.total)}</span>
-                          {showDualConversion(briefing.cheapest.total, "text-[9px] text-[#047857] font-bold font-mono")}
+                          {/* Small font Grand Total footer per instructions */}
+                          <div className="mt-3 border-t-2 border-double border-emerald-205 pt-2.5 flex items-center justify-between">
+                            <span className="text-[10px] font-black text-slate-655 uppercase tracking-widest">TCO Total</span>
+                            <div className="flex flex-col items-end">
+                              <span className="font-mono text-sm font-extrabold text-emerald-800">{formatCurrency(selectedOptionsGrandTotal)}</span>
+                              {showDualConversion(selectedOptionsGrandTotal, "text-[9px] text-[#047857] font-bold font-mono")}
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div>
-                      <h4 className="text-sm font-semibold text-slate-400 italic">No costs entered yet</h4>
-                      <p className="text-xs text-slate-400 mt-1">Populate components below to trigger dynamic comparison rankings.</p>
-                    </div>
-                  )}
+                      );
+                    } else {
+                      return (
+                        <div>
+                          <h4 className="text-sm font-semibold text-slate-400 italic">No vendor selected in summaries yet</h4>
+                          <p className="text-xs text-slate-400 mt-1">Select vendor options in Section 3 Summaries to display the consolidated financial summary here.</p>
+                        </div>
+                      );
+                    }
+                  })()}
                 </div>
                 <div className="text-[10px] text-slate-400 border-t border-slate-200/40 pt-4 mt-2 font-medium">
                   Dynamic calculations based on years parameter selection.
