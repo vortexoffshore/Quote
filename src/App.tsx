@@ -164,12 +164,19 @@ export default function App() {
           fbProjects.push(docSnap.data() as QuoteProject);
         });
         if (fbProjects.length > 0) {
-          setProjects(fbProjects);
-          const currentExist = fbProjects.some(p => p.id === activeProjectId);
-          if (!currentExist) {
-            setActiveProjectId(fbProjects[0].id);
-          }
-          console.log("Projects successfully synchronized from Firebase.");
+          setProjects(prev => {
+            const fbIds = new Set(fbProjects.map(p => p.id));
+            const uniqueLocals = prev.filter(p => !fbIds.has(p.id));
+            const allProjects = [...fbProjects, ...uniqueLocals];
+            
+            // Check if active project exists in the merged list, and default if not
+            const currentExist = allProjects.some(p => p.id === activeProjectId);
+            if (!currentExist && allProjects.length > 0) {
+              setActiveProjectId(allProjects[0].id);
+            }
+            return allProjects;
+          });
+          console.log("Projects successfully synchronized from Firebase (merged with local projects).");
         }
       } catch (err: any) {
         console.error("Error fetching projects from Firebase:", err);
@@ -2758,6 +2765,10 @@ export default function App() {
           importedProjectsList = parsed;
         } else if (parsed.projects && Array.isArray(parsed.projects)) {
           importedProjectsList = parsed.projects;
+          scorecardData = parsed.scorecards || parsed.scorecard || null;
+        } else if (parsed.quote_compare_projects && Array.isArray(parsed.quote_compare_projects)) {
+          importedProjectsList = parsed.quote_compare_projects;
+          scorecardData = parsed.quote_compare_scorecards || parsed.scorecards || parsed.scorecard || null;
         } else {
           // It's a single project wrapper or direct project
           let singleProj: any = null;
@@ -2774,6 +2785,15 @@ export default function App() {
             if (potentialProjectKey) {
               singleProj = parsed[potentialProjectKey];
               scorecardData = parsed.scorecard || parsed.scorecards?.[singleProj.id] || null;
+            } else {
+              // Try searching for any array key whose first element has vendors and categories (nested list)
+              const potentialArrayKey = Object.keys(parsed).find(
+                key => Array.isArray(parsed[key]) && parsed[key].length > 0 && parsed[key][0].vendors && parsed[key][0].categories
+              );
+              if (potentialArrayKey) {
+                importedProjectsList = parsed[potentialArrayKey];
+                scorecardData = parsed.quote_compare_scorecards || parsed.scorecards || parsed.scorecard || null;
+              }
             }
           }
           if (singleProj) {
@@ -2790,41 +2810,27 @@ export default function App() {
           const newId = `imported-${randomHex}`;
           const oldId = proj.id;
 
+          // Preserve every original field on the imported object to never leave fields empty,
+          // while ensuring correct unique IDs and required structures.
           const normalized: QuoteProject = {
+            ...proj,
             id: newId,
             name: proj.name ? (proj.name.endsWith("(Imported)") ? proj.name : `${proj.name} (Imported)`) : `Imported Comparison ${idx + 1}`,
-            date: proj.date || new Date().toISOString().split('T')[0],
-            version: proj.version || "v1.0",
-            currency: proj.currency || "USD",
-            vendors: Array.isArray(proj.vendors) ? proj.vendors : [],
-            categories: Array.isArray(proj.categories) ? proj.categories : [],
-            criteria: Array.isArray(proj.criteria) ? proj.criteria : [],
+            vendors: Array.isArray(proj.vendors) ? proj.vendors : (proj.vendors || []),
+            categories: Array.isArray(proj.categories) ? proj.categories : (proj.categories || []),
             costValues: proj.costValues || {},
-            comments: proj.comments || {},
-            vendorNotes: proj.vendorNotes || {},
-            generalNotes: proj.generalNotes || "",
-            uploadedFiles: Array.isArray(proj.uploadedFiles) ? proj.uploadedFiles : [],
-            tcoYears: proj.tcoYears || 3,
-            transposeMatrix: proj.transposeMatrix || false,
-            vendorPlans: proj.vendorPlans || {},
-            paymentMilestones: proj.paymentMilestones || {},
-            onboardingTimelines: proj.onboardingTimelines || {},
-            recommendedVendorId: proj.recommendedVendorId || undefined,
-            excludedCostComponents: proj.excludedCostComponents || {},
-            monthlyCostTrackers: proj.monthlyCostTrackers || {},
-            qualitativeRows: Array.isArray(proj.qualitativeRows) ? proj.qualitativeRows : [],
-            categoryQualitativeRows: proj.categoryQualitativeRows || {},
-            deletedCategoryQualitativeSections: proj.deletedCategoryQualitativeSections || {},
-            deletedProjectQualitativeSection: proj.deletedProjectQualitativeSection || false,
-            selectedVendorIds: proj.selectedVendorIds || {}
           };
 
           // If there is any scorecard details in the imported JSON
           if (scorecardData) {
-            setScorecards(prev => ({
-              ...prev,
-              [newId]: scorecardData
-            }));
+            // scorecardData could be a single scorecard (for a single project backup) or a dictionary of scorecards
+            const sc = scorecardData[oldId] || scorecardData;
+            if (sc && typeof sc === "object") {
+              setScorecards(prev => ({
+                ...prev,
+                [newId]: sc
+              }));
+            }
           } else if (parsed.scorecards && parsed.scorecards[oldId]) {
             setScorecards(prev => ({
               ...prev,
