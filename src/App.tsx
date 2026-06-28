@@ -2751,29 +2751,95 @@ export default function App() {
         const jsonStr = event.target?.result as string;
         const parsed = JSON.parse(jsonStr);
 
-        // Simple validation checks
-        if (!parsed.project || !parsed.project.vendors || !parsed.project.categories || !parsed.project.costValues) {
-          throw new Error("Invalid format. File must contain direct quote comparison schemas.");
+        let importedProjectsList: any[] = [];
+        let scorecardData: any = null;
+
+        if (Array.isArray(parsed)) {
+          importedProjectsList = parsed;
+        } else if (parsed.projects && Array.isArray(parsed.projects)) {
+          importedProjectsList = parsed.projects;
+        } else {
+          // It's a single project wrapper or direct project
+          let singleProj: any = null;
+          if (parsed.project && typeof parsed.project === "object") {
+            singleProj = parsed.project;
+            scorecardData = parsed.scorecard || null;
+          } else if (parsed.vendors && parsed.categories && parsed.costValues) {
+            singleProj = parsed;
+          } else {
+            // Let's search inside the keys of parsed to see if any key has vendors and categories (nested)
+            const potentialProjectKey = Object.keys(parsed).find(
+              key => parsed[key] && typeof parsed[key] === "object" && parsed[key].vendors && parsed[key].categories
+            );
+            if (potentialProjectKey) {
+              singleProj = parsed[potentialProjectKey];
+              scorecardData = parsed.scorecard || parsed.scorecards?.[singleProj.id] || null;
+            }
+          }
+          if (singleProj) {
+            importedProjectsList = [singleProj];
+          }
         }
 
-        const importedProj = parsed.project as QuoteProject;
-        // Make sure it has unique project ID to avoid collides
-        const randomHex = Math.random().toString(36).substring(2, 7);
-        importedProj.id = `imported-${randomHex}`;
-        importedProj.name = `${importedProj.name} (Imported)`;
-
-        setProjects(prev => [...prev, importedProj]);
-        setActiveProjectId(importedProj.id);
-        
-        if (parsed.scorecard) {
-          setScorecards(prev => ({
-            ...prev,
-            [importedProj.id]: parsed.scorecard
-          }));
+        if (importedProjectsList.length === 0) {
+          throw new Error("Invalid format. The JSON file must contain a valid quote comparison project with vendors, categories, and cost values.");
         }
+
+        const normalizedProjects = importedProjectsList.map((proj, idx) => {
+          const randomHex = Math.random().toString(36).substring(2, 7) + "-" + idx;
+          const newId = `imported-${randomHex}`;
+          const oldId = proj.id;
+
+          const normalized: QuoteProject = {
+            id: newId,
+            name: proj.name ? (proj.name.endsWith("(Imported)") ? proj.name : `${proj.name} (Imported)`) : `Imported Comparison ${idx + 1}`,
+            date: proj.date || new Date().toISOString().split('T')[0],
+            version: proj.version || "v1.0",
+            currency: proj.currency || "USD",
+            vendors: Array.isArray(proj.vendors) ? proj.vendors : [],
+            categories: Array.isArray(proj.categories) ? proj.categories : [],
+            criteria: Array.isArray(proj.criteria) ? proj.criteria : [],
+            costValues: proj.costValues || {},
+            comments: proj.comments || {},
+            vendorNotes: proj.vendorNotes || {},
+            generalNotes: proj.generalNotes || "",
+            uploadedFiles: Array.isArray(proj.uploadedFiles) ? proj.uploadedFiles : [],
+            tcoYears: proj.tcoYears || 3,
+            transposeMatrix: proj.transposeMatrix || false,
+            vendorPlans: proj.vendorPlans || {},
+            paymentMilestones: proj.paymentMilestones || {},
+            onboardingTimelines: proj.onboardingTimelines || {},
+            recommendedVendorId: proj.recommendedVendorId || undefined,
+            excludedCostComponents: proj.excludedCostComponents || {},
+            monthlyCostTrackers: proj.monthlyCostTrackers || {},
+            qualitativeRows: Array.isArray(proj.qualitativeRows) ? proj.qualitativeRows : [],
+            categoryQualitativeRows: proj.categoryQualitativeRows || {},
+            deletedCategoryQualitativeSections: proj.deletedCategoryQualitativeSections || {},
+            deletedProjectQualitativeSection: proj.deletedProjectQualitativeSection || false,
+            selectedVendorIds: proj.selectedVendorIds || {}
+          };
+
+          // If there is any scorecard details in the imported JSON
+          if (scorecardData) {
+            setScorecards(prev => ({
+              ...prev,
+              [newId]: scorecardData
+            }));
+          } else if (parsed.scorecards && parsed.scorecards[oldId]) {
+            setScorecards(prev => ({
+              ...prev,
+              [newId]: parsed.scorecards[oldId]
+            }));
+          }
+
+          return normalized;
+        });
+
+        setProjects(prev => [...prev, ...normalizedProjects]);
+        setActiveProjectId(normalizedProjects[0].id);
 
         setImportError(null);
-        showToast(`Successfully imported comparison model: "${importedProj.name}"`);
+        showToast(`Successfully imported comparison model: "${normalizedProjects[0].name}"`);
       } catch (err: any) {
         setImportError(`Failed to load file: ${err.message || "Invalid JSON format"}`);
         showToast("Import failed", "error");
