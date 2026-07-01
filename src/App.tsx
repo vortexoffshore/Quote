@@ -338,7 +338,6 @@ export default function App() {
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Quotes File Attachment Vault States & Handlers
   const fileVaultRef = useRef<HTMLInputElement>(null);
@@ -2743,10 +2742,6 @@ export default function App() {
   };
 
   // Import JSON file
-  const triggerFileSelect = () => {
-    fileInputRef.current?.click();
-  };
-
   const handleJsonImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
@@ -2756,7 +2751,34 @@ export default function App() {
     reader.onload = (event) => {
       try {
         const jsonStr = event.target?.result as string;
-        const parsed = JSON.parse(jsonStr);
+        if (!jsonStr) {
+          throw new Error("File is empty or could not be read.");
+        }
+
+        // Parse JSON. Support stringified and double-stringified structures (like direct local storage values)
+        let parsed = JSON.parse(jsonStr);
+        
+        // Safe deep parse of any JSON strings embedded as values (common in localStorage dumps)
+        const safeParseJson = (val: any): any => {
+          if (typeof val === "string") {
+            try {
+              const p = JSON.parse(val);
+              return safeParseJson(p);
+            } catch {
+              return val;
+            }
+          }
+          if (val && typeof val === "object") {
+            const res: any = Array.isArray(val) ? [] : {};
+            for (const key of Object.keys(val)) {
+              res[key] = safeParseJson(val[key]);
+            }
+            return res;
+          }
+          return val;
+        };
+
+        parsed = safeParseJson(parsed);
 
         let importedProjectsList: any[] = [];
         let scorecardData: any = null;
@@ -2806,16 +2828,15 @@ export default function App() {
         }
 
         const normalizedProjects = importedProjectsList.map((proj, idx) => {
-          const randomHex = Math.random().toString(36).substring(2, 7) + "-" + idx;
-          const newId = `imported-${randomHex}`;
-          const oldId = proj.id;
+          // Keep original project ID to preserve links, or fallback if none
+          const projId = proj.id || `project-${Math.random().toString(36).substring(2, 7)}`;
 
           // Preserve every original field on the imported object to never leave fields empty,
           // while ensuring correct unique IDs and required structures.
           const normalized: QuoteProject = {
             ...proj,
-            id: newId,
-            name: proj.name ? (proj.name.endsWith("(Imported)") ? proj.name : `${proj.name} (Imported)`) : `Imported Comparison ${idx + 1}`,
+            id: projId,
+            name: proj.name || `Imported Comparison ${idx + 1}`,
             vendors: Array.isArray(proj.vendors) ? proj.vendors : (proj.vendors || []),
             categories: Array.isArray(proj.categories) ? proj.categories : (proj.categories || []),
             costValues: proj.costValues || {},
@@ -2824,28 +2845,40 @@ export default function App() {
           // If there is any scorecard details in the imported JSON
           if (scorecardData) {
             // scorecardData could be a single scorecard (for a single project backup) or a dictionary of scorecards
-            const sc = scorecardData[oldId] || scorecardData;
+            const sc = scorecardData[projId] || scorecardData;
             if (sc && typeof sc === "object") {
               setScorecards(prev => ({
                 ...prev,
-                [newId]: sc
+                [projId]: sc
               }));
             }
-          } else if (parsed.scorecards && parsed.scorecards[oldId]) {
+          } else if (parsed.scorecards && parsed.scorecards[projId]) {
             setScorecards(prev => ({
               ...prev,
-              [newId]: parsed.scorecards[oldId]
+              [projId]: parsed.scorecards[projId]
             }));
           }
 
           return normalized;
         });
 
-        setProjects(prev => [...prev, ...normalizedProjects]);
-        setActiveProjectId(normalizedProjects[0].id);
+        setProjects(prev => {
+          const updatedList = [...prev];
+          normalizedProjects.forEach(normalized => {
+            const existingIdx = updatedList.findIndex(p => p.id === normalized.id);
+            if (existingIdx > -1) {
+              // Overwrite existing project to restore backup in-place
+              updatedList[existingIdx] = normalized;
+            } else {
+              updatedList.push(normalized);
+            }
+          });
+          return updatedList;
+        });
 
+        setActiveProjectId(normalizedProjects[0].id);
         setImportError(null);
-        showToast(`Successfully imported comparison model: "${normalizedProjects[0].name}"`);
+        showToast(`Successfully loaded backup model: "${normalizedProjects[0].name}"`);
       } catch (err: any) {
         setImportError(`Failed to load file: ${err.message || "Invalid JSON format"}`);
         showToast("Import failed", "error");
@@ -2945,20 +2978,18 @@ export default function App() {
             >
               <FileDown size={14} /> Export Backup
             </button>
-            <button 
-              onClick={triggerFileSelect}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs font-semibold rounded-lg transition duration-150 cursor-pointer"
+            <label 
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs font-semibold rounded-lg transition duration-150 cursor-pointer select-none"
               title="Load saved comparison JSON back"
             >
               <FileUp size={14} /> Load Backup
-            </button>
-            <input 
-              type="file" 
-              ref={fileInputRef} 
-              onChange={handleJsonImport} 
-              accept=".json" 
-              className="hidden" 
-            />
+              <input 
+                type="file" 
+                onChange={handleJsonImport} 
+                accept=".json" 
+                className="sr-only" 
+              />
+            </label>
             <button 
               onClick={() => window.print()}
               className="p-1.5 ml-1 border border-slate-200 rounded-lg text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 hover:border-indigo-150 transition cursor-pointer"
