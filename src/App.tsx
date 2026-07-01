@@ -21,6 +21,7 @@ import {
   HelpCircle, 
   BarChart, 
   FileText, 
+  FileCode,
   Briefcase, 
   FileSpreadsheet, 
   Clock, 
