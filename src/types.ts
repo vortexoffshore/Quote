@@ -29,6 +29,7 @@ export interface UploadedFile {
   base64: string;
   uploadedAt: string;
   vendorId?: string;
+  categoryId?: string;
 }
 
 export interface MonthlyCostTrackerRow {

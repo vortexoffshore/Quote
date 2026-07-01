@@ -410,7 +410,11 @@ export default function App() {
     return (project.uploadedFiles || []).filter(f => f.vendorId === vendorId);
   };
 
-  const handleVendorFileUpload = (vendorId: string, ev: React.ChangeEvent<HTMLInputElement>) => {
+  const getFilesForVendorAndCategory = (vendorId: string, categoryId: string) => {
+    return (project.uploadedFiles || []).filter(f => f.vendorId === vendorId && f.categoryId === categoryId);
+  };
+
+  const handleVendorFileUpload = (vendorId: string, categoryId: string, ev: React.ChangeEvent<HTMLInputElement>) => {
     const files = ev.target.files;
     if (!files || files.length === 0) return;
 
@@ -431,7 +435,8 @@ export default function App() {
           size: file.size,
           base64,
           uploadedAt: new Date().toLocaleDateString(),
-          vendorId: vendorId
+          vendorId: vendorId,
+          categoryId: categoryId
         };
 
         const updatedFiles = [...(project.uploadedFiles || []), newFile];
@@ -3644,16 +3649,26 @@ export default function App() {
                         <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Linked Supplier Files</span>
                         {getFilesForVendor(v.id).length > 0 ? (
                           <div className="flex flex-col gap-1 mt-1">
-                            {getFilesForVendor(v.id).map((f) => (
-                              <div
-                                key={f.id}
-                                onClick={() => setActiveViewFile(f)}
-                                className="flex items-center gap-1.5 p-1.5 border border-slate-200 hover:border-cyan-300 rounded-lg hover:bg-cyan-50/10 cursor-pointer transition text-[11px] text-[#0e7490]"
-                              >
-                                <Paperclip size={11} className="text-cyan-600 font-bold" />
-                                <span className="underline truncate max-w-[200px] font-mono leading-none">{f.name}</span>
-                              </div>
-                            ))}
+                            {getFilesForVendor(v.id).map((f) => {
+                              const catName = project.categories.find(c => c.id === f.categoryId)?.name;
+                              return (
+                                <div
+                                  key={f.id}
+                                  onClick={() => setActiveViewFile(f)}
+                                  className="flex items-center justify-between p-1.5 border border-slate-200 hover:border-cyan-300 rounded-lg hover:bg-cyan-50/10 cursor-pointer transition text-[11px] text-[#0e7490]"
+                                >
+                                  <div className="flex items-center gap-1.5 min-w-0">
+                                    <Paperclip size={11} className="text-cyan-600 font-bold shrink-0" />
+                                    <span className="underline truncate max-w-[150px] font-mono leading-none" title={f.name}>{f.name}</span>
+                                  </div>
+                                  {catName && (
+                                    <span className="text-[9px] bg-cyan-50 text-cyan-700 px-1.5 py-0.5 rounded font-semibold shrink-0">
+                                      {catName}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
                         ) : (
                           <span className="text-slate-400 italic text-[11px]">No specific contract proposal attachments.</span>
@@ -4153,7 +4168,7 @@ export default function App() {
                                   </div>
                                 </td>
                                 {getCategoryVendors(cat).map((vendor) => {
-                                  const vendorFiles = getFilesForVendor(vendor.id);
+                                  const vendorFiles = getFilesForVendorAndCategory(vendor.id, cat.id);
                                   return (
                                     <td key={vendor.id} className={`px-4 py-3 text-right transition-all duration-200 ${project.selectedVendorIds?.[cat.id] === vendor.id ? "bg-emerald-50/45 border-x border-emerald-100" : ""}`}>
                                       <div className="flex flex-col items-end gap-1.5 justify-start">
@@ -4208,7 +4223,7 @@ export default function App() {
                                             const input = document.createElement("input");
                                             input.type = "file";
                                             input.multiple = true;
-                                            input.onchange = (ev) => handleVendorFileUpload(vendor.id, ev as any);
+                                            input.onchange = (ev) => handleVendorFileUpload(vendor.id, cat.id, ev as any);
                                             input.click();
                                           }}
                                           className="inline-flex items-center gap-1 font-bold text-[9px] text-indigo-650 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border border-indigo-150 rounded px-1.5 py-0.5 transition cursor-pointer"
@@ -4391,12 +4406,10 @@ export default function App() {
                                               <Check size={8} className={isSelected ? "stroke-[3]" : "opacity-50"} />
                                               {isSelected ? "Selected" : "Select"}
                                             </button>
-                                          </div>
-
-                                          {/* Transposed row attachments block */}
+                                              {/* Transposed row attachments block */}
                                           <div className="flex flex-col gap-1 mt-1 print:hidden select-text">
                                             {(() => {
-                                              const vendorFiles = getFilesForVendor(vendor.id);
+                                              const vendorFiles = getFilesForVendorAndCategory(vendor.id, cat.id);
                                               return (
                                                 <>
                                                   {vendorFiles.length > 0 && (
@@ -4448,7 +4461,7 @@ export default function App() {
                                                       const input = document.createElement("input");
                                                       input.type = "file";
                                                       input.multiple = true;
-                                                      input.onchange = (ev2) => handleVendorFileUpload(vendor.id, ev2 as any);
+                                                      input.onchange = (ev2) => handleVendorFileUpload(vendor.id, cat.id, ev2 as any);
                                                       input.click();
                                                     }}
                                                     className="inline-flex items-center gap-1 font-bold text-[8.5px] text-indigo-650 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border border-indigo-150 rounded px-1 py-0.5 transition w-fit cursor-pointer"
@@ -4458,7 +4471,7 @@ export default function App() {
                                                 </>
                                               );
                                             })()}
-                                          </div>
+                                          </div>                                         </div>
                                         </div>
                                       )}
                                     </td>
@@ -5245,7 +5258,7 @@ export default function App() {
                                     </span>
                                     {/* Small dossier file indicators if any attached */}
                                     {(() => {
-                                      const vendorFiles = getFilesForVendor(selectedVendor.id);
+                                      const vendorFiles = getFilesForVendorAndCategory(selectedVendor.id, cat.id);
                                       if (vendorFiles.length > 0) {
                                         return (
                                           <div className="flex items-center gap-1 print:hidden" title={`${vendorFiles.length} file(s) attached`}>
